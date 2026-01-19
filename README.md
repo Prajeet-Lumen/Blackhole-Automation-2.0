@@ -343,12 +343,12 @@ if idle_time >= 3600:  # 1 hour
 
 **Log File Naming:**
 - Format: `SESSION_<YYYYMMDD>_<HHMMSS>_<USERNAME>.log`
-- Example: `SESSION_20260118_143052_prajeet.log`
+- Example: `SESSION_20260118_143052_[user].log`
 - One log per login session
 
 **Log Content Examples:**
 ```
-[2026-01-18 14:30:52] Session log initialized for prajeet
+[2026-01-18 14:30:52] Session log initialized for [user]
 [2026-01-18 14:30:52] [LOGIN] authenticated
 [2026-01-18 14:30:55] [RETRIEVE] Querying IP: 10.0.0.1
 [2026-01-18 14:30:57] [RETRIEVE] Found 3 blackholes for 10.0.0.1
@@ -521,7 +521,7 @@ Form params (vary by action):
 |------|-------|---------|----------|
 | **IP Address** | IPs (one per line, CIDR supported) | `10.0.0.1` or `10.0.0.0/24` | Bidirectional concurrent retrieval; tries broader masks if needed |
 | **Ticket #** | Ticket number | `INC1234567` | Single query; returns all blackholes for ticket |
-| **Opened by** | Username | `prajeet` | Returns all IPs blackholed by this user |
+| **Opened by** | Username | `[user]` | Returns all IPs blackholed by this user |
 | **Blackhole ID #** | Blackhole ID | `BH12345` | Direct lookup by ID |
 | **Open Date** | Month/Year dropdown | Jan 2026 | Returns all blackholes created in specified month |
 | **Active Blackholes** | (None; auto-queried) | N/A | Returns all active (non-closed) blackholes |

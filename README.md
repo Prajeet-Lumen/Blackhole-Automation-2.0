@@ -694,19 +694,6 @@ Expected behavior:
 - `Desktop/BlackholeAutomation_Logs/` folder created
 - Can log in and use app normally
 
-**Step 4: Distribute**
-
-**Option A: ZIP for Email/File Share**
-```powershell
-# Windows Explorer: right-click dist\BlackholeAutomation → Send to → Compressed (zipped) folder
-# Result: BlackholeAutomation.zip (can be emailed or shared)
-```
-
-**Option B: Network Share**
-```powershell
-# Copy entire dist\BlackholeAutomation\ folder to network share
-# Coworkers access via: \\network\share\BlackholeAutomation\BlackholeAutomation.exe
-```
 
 ### For End Users: Installation & First Run
 
@@ -874,9 +861,6 @@ A: Yes. Each user gets their own session log file (timestamped username). Deskto
 **Q: How do I update to a new version?**
 A: Download new `BlackholeAutomation.exe`. Replace old .exe. Run new one. No migration needed; session logs auto-created.
 
-**Q: Can I customize the 1-hour logout timeout?**
-A: Yes (for advanced users). Set environment variable `BH_INACTIVITY_TIMEOUT=<seconds>`. Default: 3600 (1 hour). Restart app for change to take effect.
-
 **Q: What's the maximum number of IPs I can process at once?**
 A: No hard limit. Tested with 100+ IPs. GUI responsive throughout. Session log handles any number of entries. Recommend batching retrieval >500 IPs for clarity.
 
@@ -919,28 +903,7 @@ python -m BlackholeGUI
 
 ---
 
-## Development
-
-**Requirements:**
-- Python 3.10+
-- `playwright` (Chromium browser included)
-- `tkinter` (built-in)
-- `pyee`, `greenlet` (included)
-
-**Install:**
-```powershell
-pip install -r requirements.txt
-python -m playwright install
-```
-
-**Run locally:**
-```powershell
-python main_entry.py
-```
-
----
-
-## Extensibility & Future Work
+## Extensibility & Future Work (MAYBE)
 
 - Dark mode support
 - Email integration for alerts

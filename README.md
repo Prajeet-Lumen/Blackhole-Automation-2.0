@@ -1,19 +1,19 @@
 # Blackhole Automation
 
 > **Owner:** Prajeet Pounraj (Information Security Engineer II)  
-> **Status:** ✅ Production-ready | Deployable as standalone `.exe`
+> **Status:** Production-ready | Deployable as standalone `.exe`
 
 Desktop GUI automation for the internal Lumen Blackhole portal. Built with Tkinter, Playwright HTTP client, async session logging, and connection pooling.
 
 **Key Features:**
-- ✅ Concurrent multi-IP operations (retrieve/create)
-- ✅ High-performance batch updates (~10x faster via connection pooling)
-- ✅ Async session logging (non-blocking)
-- ✅ 1-hour inactivity auto-logout (configurable)
-- ✅ Graceful shutdown & cooperative abort
-- ✅ Per-IP retry logic (3 attempts, 2-sec delays)
-- ✅ Thread-safe UI updates
-- ✅ Desktop logs auto-created on first run
+- Concurrent multi-IP operations (retrieve/create)
+- High-performance batch updates (faster via connection pooling **108x**) 
+- Async session logging (non-blocking)
+- 1-hour inactivity auto-logout (configurable)
+- Graceful shutdown & cooperative abort
+- Per-IP retry logic (3 attempts with delays)
+- Thread-safe UI updates
+- Desktop logs auto-created on first run
 
 ---
 
@@ -23,7 +23,7 @@ Desktop GUI automation for the internal Lumen Blackhole portal. Built with Tkint
 
 1. Download `BlackholeAutomation.exe` (or extract ZIP)
 2. Double-click `BlackholeAutomation.exe`
-3. Wait 5–10 seconds for GUI to open
+3. Wait for GUI to open
 4. Log in with Blackhole portal credentials
 5. Desktop logs created at: `Desktop/BlackholeAutomation_Logs/`
 
@@ -93,7 +93,7 @@ python main_entry.py
 - **Associate Ticket** — Link ticket to all IDs
 - **Close Now** — Immediately close all IDs (requires confirmation)
 
-**Performance:** Connection pooling makes batch operations ~10x faster (50 IDs ~5–10 sec total).
+**Performance:** Connection pooling makes batch operations significantly faster.
 
 ---
 
@@ -112,35 +112,18 @@ python main_entry.py
 & "C:\Users\ad55004\OneDrive - Lumen\Desktop\Automation\venv100\Scripts\Activate.ps1"
 pip install pyinstaller
 
-# Step 2: Build .exe (2–5 min)
+# Step 2: Build .exe
 cd "C:\Users\ad55004\OneDrive - Lumen\Desktop\Automation"
 pyinstaller BlackholeAutomation.spec
 
-# Step 3: Test (optional)
+# Step 3: Test
 .\dist\BlackholeAutomation\BlackholeAutomation.exe
 
-# Step 4: Distribute
-# Option A: ZIP dist\BlackholeAutomation\ folder
-# Option B: Copy to network share (e.g., \\network\share\BlackholeAutomation\)
 ```
 
 **Output:**
-- `dist/BlackholeAutomation.exe` — Standalone executable (~50 MB)
+- `dist/BlackholeAutomation.exe` — Standalone executable
 - `dist/BlackholeAutomation/` — All dependencies bundled (Playwright, pyee, greenlet)
-
-### Development Environment
-
-```powershell
-# Install dev dependencies
-pip install -r requirements.txt
-python -m playwright install
-
-# Run locally
-python main_entry.py
-
-# Run tests (if applicable)
-pytest tests/
-```
 
 ---
 
@@ -148,20 +131,21 @@ pytest tests/
 
 ### Core Modules
 
-| Module | Purpose |
-|--------|---------|
-| **BlackholeGUI.py** | Main Tkinter GUI controller |
-| **AuthManager.py** | HTTP authentication & config creation |
-| **PlayWrightUtil.py** | Playwright utilities & connection pooling |
-| **RetrievalEngine.py** | Structured HTTP retrieval & parsing |
-| **CreateBlackhole.py** | Blackhole creation via HTTP POST |
-| **BatchRemoval.py** | Batch updates with pooling |
-| **SessionLogger.py** | Async per-user session logging |
+______________________________________________________________________
+| Module                 | Purpose                                   |
+|------------------------|-------------------------------------------|
+| **BlackholeGUI.py**    | Main Tkinter GUI controller               |
+| **AuthManager.py**     | HTTP authentication & config creation     |
+| **PlayWrightUtil.py**  | Playwright utilities & connection pooling |
+| **RetrievalEngine.py** | Structured HTTP retrieval & parsing       |
+| **CreateBlackhole.py** | Blackhole creation via HTTP POST          |
+| **BatchRemoval.py**    | Batch updates with pooling                |
+| **SessionLogger.py**   | Async per-user session logging            |
 
 ### Key Design Patterns
 
 1. **PlaywrightConfig** — Immutable config object passed to all modules (single source of truth)
-2. **Connection Pooling** — Single reused request context for batch operations (~10x faster)
+2. **Connection Pooling** — Single reused request context for batch operations (~108x faster)
 3. **Async Session Logging** — Non-blocking queue-based background writer thread
 4. **Cooperative Abort** — Operations check abort event between iterations for graceful stops
 5. **Inactivity Auto-Logout** — 1-hour timeout with background watcher thread
@@ -174,12 +158,14 @@ pytest tests/
 
 ### Environment Variables
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `BH_FORCE_SSL_VERIFY` | 0 | 1 = enforce SSL; 0 = ignore (internal CA) |
-| `BH_INACTIVITY_TIMEOUT` | 3600 | Auto-logout timeout (seconds) |
-| `BH_HTTP_USER` | (from login) | HTTP basic auth username |
-| `BH_HTTP_PASS` | (from login) | HTTP basic auth password |
+__________________________________________________________________________________________
+| Variable                | Default       | Purpose                                      |
+|-------------------------|---------------|----------------------------------------------|
+| `BH_FORCE_SSL_VERIFY`   | 0             | 1 = enforce SSL; 0 = ignore (internal CA)    |
+| `BH_INACTIVITY_TIMEOUT` | 3600          | Auto-logout timeout (seconds)                |
+| `BH_HTTP_USER`          | (from login)  | HTTP basic auth username                     |
+| `BH_HTTP_PASS`          | (from login)  | HTTP basic auth password                     |
+
 
 ### Session Logging
 
@@ -200,14 +186,15 @@ pytest tests/
 ## Troubleshooting & FAQ
 
 ### Common Issues
+______________________________________________________________________________________________________________
+| Problem                    | Cause                              | Solution                                 |
+|----------------------------|------------------------------------|------------------------------------------|
+| "Login Failed"             | Wrong credentials or no API access | Verify creds in web UI; check network    |
+| GUI won't open             | Tkinter missing or display issue   | Update graphics drivers; try from cmd    |
+| "Connection Timed Out"     | Network/firewall/service down      | Ping target; check port 443; verify VPN  |
+| Logs folder not created    | Permissions issue                  | Check Desktop folder permissions         |
+| Slow performance (>500 IPs)| API / CPU / 16 GB Ram constraint   | Expected ~15–30 min; can't optimize      |
 
-| Problem | Cause | Solution |
-|---------|-------|----------|
-| "Login Failed" | Wrong credentials or no API access | Verify creds in web UI; check network |
-| GUI won't open | Tkinter missing or display issue | Update graphics drivers; try from cmd |
-| "Connection Timed Out" | Network/firewall/service down | Ping target; check port 443; verify VPN |
-| Logs folder not created | Permissions issue | Check Desktop folder permissions |
-| Slow performance (>500 IPs) | API constraint | Expected ~15–30 min; can't optimize |
 
 ### Tab-Specific Issues
 
@@ -222,15 +209,15 @@ pytest tests/
 - **CIDR not working** — Use format `10.0.0.0/24`; app expands automatically
 
 **UPDATE Tab:**
-- **Can't load IDs from IPs** — IPs must exist and be created by current user
+- **Can't load IDs from IPs** — IPs must exist
 - **Batch update slow for 1–2 IDs** — Overhead-bound; expected; no optimization possible
 - **Operations stall** — Click "Abort" to stop gracefully; check network
 
 ### Performance Tips
 
-- **50+ IPs batch operations:** ~10x faster with connection pooling; 5–10 sec total
-- **Single operations:** 1–3 sec per IP (normal; no pooling overhead)
-- **Large IP ranges (>500):** Estimated 15–30 min; run from same network as service
+- **50+ IPs batch operations:** Significantly faster with connection pooling
+- **Single operations:** Normal performance (no pooling overhead)
+- **Large IP ranges (>500):** Run from same network as service for best results
 - **Slow retrieval:** Check network latency; consider VPN or local network access
 
 ### FAQ
@@ -241,7 +228,7 @@ A: Yes. Run `pyinstaller BlackholeAutomation.spec` on target OS. No code changes
 **Q: Is my password saved?**  
 A: No. Password used only for HTTP login; session ends on logout or 1-hour timeout.
 
-**Q: Can I export/import bulk IPs?**  
+**Q: Can I export bulk IPs?**  
 A: Yes. Paste IPs into CREATE/RETRIEVE; export via "Export Results (CSV)"; copy rows as TSV.
 
 **Q: Multiple users simultaneously?**  
@@ -250,34 +237,33 @@ A: Yes. Each user gets timestamped session log; Desktop logs folder is per-user.
 **Q: Update to new version?**  
 A: Download new .exe; replace old one; run. Session logs auto-created.
 
-**Q: Customize 1-hour timeout?**  
-A: Set `BH_INACTIVITY_TIMEOUT=<seconds>` env var; restart app.
-
 **Q: Maximum IPs at once?**  
-A: No hard limit. Tested with 100+ IPs. Recommend batching >500 IPs for clarity.
+A: No hard limit. Tested with 100+ IPs. Recommend batching < 500 IPs for clarity.
 
 ---
 
 ## Project Files
 
-| File | Purpose |
-|------|---------|
-| `main_entry.py` | Entry point; ensures logs folder |
-| `BlackholeAutomation.spec` | PyInstaller config |
-| `requirements.txt` | Python dependencies |
-| `Build_Reqs.yaml` | Architecture notes |
-| `README.md` | Main documentation |
-| `API_REFERENCE.md` | Detailed method/class API |
-| `AuthManager.py` | HTTP authentication |
-| `PlayWrightUtil.py` | Playwright utilities |
-| `RetrievalEngine.py` | Retrieval engine |
-| `CreateBlackhole.py` | Creation logic |
-| `BatchRemoval.py` | Batch operations |
-| `SessionLogger.py` | Session logging |
-| `BlackholeGUI.py` | Main GUI controller |
+
+| File                       | Purpose                          |
+|----------------------------|----------------------------------|
+| `main_entry.py`            | Entry point; ensures logs folder |
+| `BlackholeAutomation.spec` | PyInstaller config               |
+| `requirements.txt`         | Python dependencies              |
+| `Build_Reqs.yaml`          | Architecture notes               |
+| `README.md`                | Main documentation               |
+| `API_REFERENCE.md`         | Detailed method/class API        |
+| `AuthManager.py`           | HTTP authentication              |
+| `PlayWrightUtil.py`        | Playwright utilities             |
+| `RetrievalEngine.py`       | Retrieval engine                 |
+| `CreateBlackhole.py`       | Creation logic                   |
+| `BatchRemoval.py`          | Batch operations                 |
+| `SessionLogger.py`         | Session logging                  |
+| `BlackholeGUI.py`          | Main GUI controller              |
+
 
 ---
 
-**Status:** ✅ **Production-ready** | Deployable as standalone `.exe` | No external dependencies on client machines
+**Status:** Production-ready | Deployable as standalone `.exe` | No external dependencies on client machines
 
 **Repository:** https://github.com/Prajeet-Lumen/Blackhole_Automation

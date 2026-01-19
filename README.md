@@ -2,7 +2,7 @@
 
 > **Owner:** Prajeet Pounraj (Information Security Engineer II)  
 > **Last updated:** 2026-01-18  
-> **Status:** ✅ Production-ready | Deployable as standalone `.exe` | Zero external dependencies on client machines
+> **Status:** Production-ready | Deployable as standalone `.exe` | Zero external dependencies on client machines
 
 Comprehensive desktop GUI automation for the internal Lumen Blackhole portal (https://blackhole.ip.qwest.net/). Built with Tkinter GUI, Playwright HTTP client, async session logging, and connection pooling for high-performance batch operations.
 
@@ -59,10 +59,10 @@ pyinstaller BlackholeAutomation.spec
 - Copy to network share for coworker access
 
 **Deployment Features:**
-- ✅ No Python/venv/dependencies required on coworker machines
-- ✅ Desktop logs auto-created on first run
-- ✅ All dependencies (Playwright, pyee, greenlet) bundled
-- ✅ Standalone Windows 10+ executable
+-  No Python/venv/dependencies required on coworker machines
+-  Desktop logs auto-created on first run
+-  All dependencies (Playwright, pyee, greenlet) bundled
+-  Standalone Windows 10+ executable
 
 ---
 
@@ -103,9 +103,9 @@ User (GUI) → BlackholeGUI.on_login()
     ┌─────────────────────────────────────────────────┐
     │ Operations (with shared PlaywrightConfig)       │
     │                                                 │
-    │ ├─ Retrieve → RetrievalEngine (concurrent)     │
-    │ ├─ Create → CreateBlackhole (per-IP retries)   │
-    │ ├─ Batch Update → BatchRemoval (pooled)        │
+    │ ├─ Retrieve → RetrievalEngine (concurrent)      │
+    │ ├─ Create → CreateBlackhole (per-IP retries)    │
+    │ ├─ Batch Update → BatchRemoval (pooled)         │
     │ └─ All operations → SessionLogger (async queue) │
     └─────────────────────────────────────────────────┘
                 ↓
@@ -248,19 +248,19 @@ if idle_time >= 3600:  # 1 hour
 
 ## Features & Detailed Capabilities
 
-✅ **Desktop Log Folder** — Auto-created at `Desktop/BlackholeAutomation_Logs/` on first run; per-user timestamped session logs  
-✅ **Session Logging** — Async background writer (non-blocking queue); structured entries with timestamps  
-✅ **Responsive GUI** — Long operations (create 100 IPs, batch 50 updates) run in background threads  
-✅ **Graceful Shutdown** — Waits for active operations; closes auth/logging resources cleanly  
-✅ **Auto-Logout** — 1-hour inactivity timeout (configurable via `BH_INACTIVITY_TIMEOUT` env var)  
-✅ **Cooperative Abort** — Users click "Abort" button to stop operations mid-way  
-✅ **Connection Pooling** — Batch operations ~10x faster via single reused Playwright context  
-✅ **IP Validation** — Validates IPv4 format; rejects reserved/special IPs (0.0.0.0, 127.x.x.x, etc.)  
-✅ **Concurrent Retrieval** — Bidirectional multi-IP processing (top-down & bottom-up); progress per IP  
-✅ **Comprehensive Error Handling** — Try-catch in all critical paths; user-friendly error messages; graceful recovery  
-✅ **Per-IP Retry Logic** — Create operations support 3 retries with 2-second delays per IP  
-✅ **Thread-Safe UI Updates** — Message queue prevents race conditions; all UI calls via main thread  
-✅ **Inactivity Watcher** — Background thread checks every 1 second; auto-logout after timeout  
+ **Desktop Log Folder** — Auto-created at `Desktop/BlackholeAutomation_Logs/` on first run; per-user timestamped session logs  
+ **Session Logging** — Async background writer (non-blocking queue); structured entries with timestamps  
+ **Responsive GUI** — Long operations (create 100 IPs, batch 50 updates) run in background threads  
+ **Graceful Shutdown** — Waits for active operations; closes auth/logging resources cleanly  
+ **Auto-Logout** — 1-hour inactivity timeout (configurable via `BH_INACTIVITY_TIMEOUT` env var)  
+ **Cooperative Abort** — Users click "Abort" button to stop operations mid-way  
+ **Connection Pooling** — Batch operations ~10x faster via single reused Playwright context  
+ **IP Validation** — Validates IPv4 format; rejects reserved/special IPs (0.0.0.0, 127.x.x.x, etc.)  
+ **Concurrent Retrieval** — Bidirectional multi-IP processing (top-down & bottom-up); progress per IP  
+ **Comprehensive Error Handling** — Try-catch in all critical paths; user-friendly error messages; graceful recovery  
+ **Per-IP Retry Logic** — Create operations support 3 retries with 2-second delays per IP  
+ **Thread-Safe UI Updates** — Message queue prevents race conditions; all UI calls via main thread  
+ **Inactivity Watcher** — Background thread checks every 1 second; auto-logout after timeout  
 
 **Operational Capabilities:**
 - Create blackholes: 100+ IPs with ticket/auto-close/description
@@ -661,13 +661,13 @@ After IDs loaded, select one operation:
 
 ## Deployment & Packaging
 
-### For Builders: Creating .exe (4 Steps)
+### For Builders: Creating .exe 
 ```powershell
 & "C:\Users\ad55004\OneDrive - Lumen\Desktop\Automation\venv100\Scripts\Activate.ps1"
 pip install pyinstaller
 ```
 
-**Step 2: Build .exe** (2–5 min)
+**Step 2: Build .exe**
 ```powershell
 cd "C:\Users\ad55004\OneDrive - Lumen\Desktop\Automation"
 pyinstaller BlackholeAutomation.spec
@@ -684,7 +684,7 @@ pyinstaller BlackholeAutomation.spec
 - `dist/BlackholeAutomation.exe` — Standalone executable (~50 MB)
 - `dist/BlackholeAutomation/` — Complete application folder with all dependencies
 
-**Step 3: Test** (optional, ~2 min)
+**Step 3: Test** 
 ```powershell
 .\dist\BlackholeAutomation\BlackholeAutomation.exe
 ```
@@ -694,7 +694,7 @@ Expected behavior:
 - `Desktop/BlackholeAutomation_Logs/` folder created
 - Can log in and use app normally
 
-**Step 4: Distribute** (~5 min)
+**Step 4: Distribute**
 
 **Option A: ZIP for Email/File Share**
 ```powershell
@@ -718,12 +718,12 @@ Expected behavior:
 5. Desktop logs folder `BlackholeAutomation_Logs/` created automatically
 
 **No Manual Steps Needed:**
-- ❌ Install Python
-- ❌ Create virtual environment
-- ❌ Run `pip install`
-- ❌ Download Playwright browsers
-- ❌ Set environment variables
-- ❌ Configure anything
+-  Install Python
+-  Create virtual environment
+-  Run `pip install`
+-  Download Playwright browsers
+-  Set environment variables
+-  Configure anything
 
 **First Run Features:**
 - Desktop logs folder created at: `C:\Users\{user}\Desktop\BlackholeAutomation_Logs\`
@@ -971,4 +971,4 @@ python main_entry.py
 
 ---
 
-**Status:** ✅ **Production-ready** | Deployable as standalone `.exe` | No external dependencies
+**Status:**  **Production-ready** | Deployable as standalone `.exe` | No external dependencies

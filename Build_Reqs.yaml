@@ -1,0 +1,494 @@
+project:
+  name: blackhole-automation
+  version: "1.0"
+  author: "Prajeet Pounraj (Information Security Engineer II)"
+  created: "December 2025"
+  last_updated: "2026-01-18"
+  status: "Production-ready | Deployable as standalone .exe | Zero external dependencies"
+  description: >
+    Desktop GUI automation for the internal Lumen Blackhole portal (https://blackhole.ip.qwest.net/).
+    Uses Playwright for authenticated HTTP requests with browser automation. Features include concurrent
+    multi-IP operations, connection pooling for batch updates, inactivity-based auto-logout (1 hour),
+    session logging with async background writer, graceful shutdown, and comprehensive error handling.
+
+# ============================================================================
+# ENDPOINTS & URLS
+# ============================================================================
+endpoints:
+  base_url: "https://blackhole.ip.qwest.net/"
+  control_page: "https://blackhole.ip.qwest.net/control.html"
+  new_blackhole_form: "https://blackhole.ip.qwest.net/new.html"
+  
+  api_endpoints:
+    view_by_id:
+      method: GET
+      path: "view.cgi"
+      params:
+        searchby: "blackhole_id"
+        id: "<string>"
+      response: "HTML page with blackhole details"
+    
+    search_generic:
+      method: POST
+      path: "search.cgi"
+      cases:
+        - by_ticket: {searchby: "ticket", ticket_system: "Clarify|NTM-Remedy|Vantive", ticket_number: "<string>"}
+        - by_ip: {searchby: "ipaddress", ipaddress: "<IPv4/IPv6/CIDR>", view: "Open|Closed|Both"}
+        - by_user: {searchby: "open_user", user: "<username>"}
+        - by_date: {searchby: "open_date", month: "01-12|Month", year: "YYYY", description: "<optional>"}
+        - active: {searchby: "active_holes"}
+
+# ============================================================================
+# ARCHITECTURE
+# ============================================================================
+architecture:
+  pattern: "Playwright HTTP + GUI Orchestrator"
+  
+  design_principles:
+    - "PlaywrightConfig created once at login; passed immutably to all modules"
+    - "No environment variable re-reading in modules; all creds via config"
+    - "Connection pooling via PlaywrightClient for batch operations"
+    - "Async queue-based logging; non-blocking to main thread"
+    - "Cooperative abort mechanism for graceful shutdown"
+    - "Inactivity tracking with auto-logout after 1 hour"
+  
+  core_flows:
+    login: "User → AuthManager → creates PlaywrightConfig → SessionLogger starts"
+    retrieve: "User → RetrievalEngine (with config) → HTTP + HTML parse → Results"
+    create: "User → CreateBlackhole (with config) → HTTP POST new.cgi → Per-IP results"
+    batch: "User → BatchRemoval (with PlaywrightClient pooling) → Concurrent operations"
+    log: "All modules → SessionLogger queue → Background writer → SESSION_*.log"
+    inactivity: "Background watcher (1 sec interval) → 1 hour timeout → auto-logout"
+
+# ============================================================================
+# MODULES & IMPLEMENTATIONS
+# ============================================================================
+modules:
+  PlayWrightUtil.py:
+    purpose: "Centralized Playwright utilities"
+    created: "December 2025"
+    edited: "2026-01-18"
+    classes:
+      - PlaywrightConfig: "Immutable config object (base_url, storage_state, verify_ssl, http_user, http_pass)"
+      - PlaywrightClient: "Pooled request context manager (get, post, dispose)"
+    functions:
+      - build_request_kwargs: "Build Playwright context kwargs"
+      - read_env_config: "Read TLS + HTTP creds from environment"
+      - suppress_cleanup_warning: "Check for harmless cleanup exceptions"
+
+  AuthManager.py:
+    purpose: "Playwright HTTP authentication; creates PlaywrightConfig"
+    created: "December 2025"
+    edited: "2026-01-18"
+    public_methods:
+      - login_with_http_credentials(username, password, headless) -> bool
+      - get_storage_state() -> Optional[Dict]
+      - get_config() -> Optional[PlaywrightConfig]
+      - close() -> None
+    behavior:
+      - "Lazy-imports Playwright with exception handling"
+      - "Configures TLS policy via BH_FORCE_SSL_VERIFY env var"
+      - "Captures storage_state (cookies) on success"
+      - "Creates immutable PlaywrightConfig for all modules"
+      - "Returns True on 2xx/3xx, False otherwise"
+      - "Guaranteed cleanup via try/finally"
+
+  RetrievalEngine.py:
+    purpose: "Structured HTTP retrieval with filtering and HTML table parsing"
+    created: "December 2025"
+    edited: "2026-01-18"
+    public_methods:
+      - retrieve(filters: Dict) -> List[Dict]
+    filters_supported:
+      - blackhole_id_value
+      - ticket_number_value (+ ticket_system)
+      - opened_by_value
+      - ip_address_value (+ view: Open/Closed/Both)
+      - month / year (+ optional description)
+      - active_holes (no params)
+    endpoints:
+      - GET view.cgi (by blackhole ID)
+      - POST search.cgi (all other filters)
+    implementation:
+      - "Accepts optional PlaywrightConfig (avoids env-var re-reading)"
+      - "Falls back to legacy behavior if config not provided"
+      - "Uses Playwright Request for HTTP with storage_state"
+      - "Renders HTML into Page; parses tables via DOM"
+      - "Returns list of dicts: header rows + data rows"
+
+  CreateBlackhole.py:
+    purpose: "Create blackholes via HTTP POST to new.cgi"
+    created: "December 2025"
+    edited: "2026-01-18"
+    public_methods:
+      - submit_blackholes_http(ip_list, ticket_number, autoclose_time, description, ticket_system) -> List[Dict]
+    validation:
+      - "Requires ticket_number OR non-blank autoclose_time"
+    retry_logic:
+      - TIMEOUT_MS: 30000
+      - MAX_RETRIES: 3
+      - RETRY_DELAY: 2 seconds
+    return_format:
+      - "{ip, ticket_number, success, status, message, response_time}"
+    implementation:
+      - "Accepts optional PlaywrightConfig"
+      - "Falls back to legacy behavior if config not provided"
+      - "POSTs to new.cgi for each IP with retry"
+
+  BatchRemoval.py:
+    purpose: "Batch update operations with connection pooling"
+    created: "December 2025"
+    edited: "2026-01-18"
+    public_methods:
+      - view_details_html(blackhole_id) -> str
+      - set_description(blackhole_id, description) -> Dict
+      - set_autoclose(blackhole_id, close_text) -> Dict
+      - associate_ticket(blackhole_id, ticket_system, ticket_number) -> Dict
+      - close_now(blackhole_id) -> Dict
+      - batch_post_views(operations, max_workers, timeout, abort_event) -> List[Dict]
+    batch_post_views_pooling:
+      - "Uses PlaywrightClient with single reused request context"
+      - "Operations: List[Tuple[blackhole_id, form_dict]]"
+      - "Concurrency: Thread pool (default: 5 workers)"
+      - "Performance: 10x faster than per-operation contexts"
+      - "Abort support: Cooperative abort via abort_event"
+    implementation:
+      - "Accepts optional PlaywrightConfig"
+      - "Falls back to legacy behavior if config not provided"
+
+  SessionLogger.py:
+    purpose: "Asynchronous per-session logging"
+    created: "December 2025"
+    edited: "2026-01-18"
+    functions:
+      - ensure_session_dir() -> str
+      - session_filename(user) -> str
+    class_SessionLogger:
+      __init__(user) -> None
+      append(line) -> None
+      append_block(title, text) -> None
+      append_json(title, obj) -> None
+      close(timeout) -> None
+    logging_format:
+      - "Filename: SESSION_<YYYYMMDD>_<HHMMSS>_<user>.log"
+      - "Location: session_logs/ (app-relative or exe-relative)"
+      - "Encoding: UTF-8"
+      - "Behavior: Append-only, queue-based, non-blocking"
+    background_thread:
+      - "Drains queue continuously"
+      - "Writes timestamped entries to file"
+      - "Stops on sentinel or when signaled + queue empty"
+      - "All I/O non-blocking to main thread"
+
+  BlackholeGUI.py:
+    purpose: "Tkinter GUI controller for all user interactions"
+    created: "December 2025"
+    edited: "2026-01-18"
+    entry_point: "main()"
+    
+    user_actions:
+      - on_login: "Authenticate, create PlaywrightConfig, start inactivity watcher"
+      - on_retrieve: "Search by IP/Ticket/ID/User/Date/Active with concurrent workers"
+      - on_create_http: "Create blackholes with optional ticket/description"
+      - on_batch_set_description: "Batch update description"
+      - on_batch_set_autoclose: "Batch set auto-close time"
+      - on_batch_associate_ticket: "Batch associate ticket"
+      - on_batch_close_now: "Batch close blackholes"
+      - on_collect_ids_from_pasted_ips: "Query IPs by logged-in user"
+      - on_copy_selected: "Copy selected table rows as TSV"
+      - on_export_results: "Export table to CSV"
+      - on_quit: "Graceful shutdown"
+    
+    inactivity_features:
+      - touch_activity(): "Record timestamp on user action"
+      - _start_inactivity_watcher(): "Background thread checking every 1 second"
+      - _auto_logout(reason): "Abort workers, close resources, notify user"
+    
+    concurrency:
+      - "Message queue for thread→UI communication"
+      - "_call_in_main() for worker→UI calls"
+      - "Concurrent workers (default: 16) for retrieve/create"
+      - "Thread pool for batch operations"
+    
+    error_handling:
+      - "Global Tkinter exception handler"
+      - "All exceptions logged to stderr"
+      - "Error dialogs shown to user"
+    
+    ui_elements:
+      - "Tabs: Create, Retrieve, Update"
+      - "Results Treeview: Fixed UTC columns, sortable"
+      - "Status bar: Ready/Connecting/Connected/etc."
+      - "Session info: Login time, user, result count"
+
+# ============================================================================
+# DATA VALIDATION & PARAMETERS
+# ============================================================================
+data_validation:
+  ip_address:
+    type: "IPv4 (4 octets, 0-255 each)"
+    blocked_ips: ["0.0.0.0", "8.8.8.8", "1.1.1.1", "127.x.x.x", "255.255.255.255"]
+    supports_cidr: true
+  
+  ticket_system:
+    type: "enum"
+    values: ["Clarify", "NTM-Remedy", "Vantive"]
+    normalization: "NTM/Remedy → NTM-Remedy"
+  
+  ticket_number:
+    type: "string"
+    required_if: "autoclose_time is blank"
+    case_sensitive: true
+  
+  autoclose_time:
+    type: "string"
+    default: "+2d (2 days)"
+    examples: ["+1d", "+3h", "+15m", "0"]
+    required_if: "ticket_number is blank"
+  
+  description:
+    type: "string"
+    hidden_in_ui: true
+    included_in_csv: true
+  
+  month:
+    type: "string or int"
+    examples: ["January", "Jan", "01", "1"]
+  
+  year:
+    type: "YYYY"
+    example: "2025"
+  
+  view_filter:
+    type: "enum"
+    values: ["Open", "Closed", "Both"]
+
+# ============================================================================
+# ENVIRONMENT VARIABLES
+# ============================================================================
+environment:
+  BH_HTTP_USER:
+    type: "string"
+    required_at: "Login time"
+    cached_in: "PlaywrightConfig"
+    description: "HTTP Basic auth username"
+  
+  BH_HTTP_PASS:
+    type: "string"
+    required_at: "Login time"
+    cached_in: "PlaywrightConfig"
+    description: "HTTP Basic auth password"
+  
+  BH_FORCE_SSL_VERIFY:
+    type: "0|1"
+    default: "0 (ignore HTTPS errors for internal CA)"
+    description: "Set to 1 for strict SSL verification"
+  
+  BH_INACTIVITY_TIMEOUT:
+    type: "integer (seconds)"
+    default: "3600 (1 hour)"
+    description: "Auto-logout after this many seconds of inactivity"
+
+# ============================================================================
+# OPERATIONAL FLOWS
+# ============================================================================
+flows:
+  login_flow:
+    steps:
+      - "User enters credentials in GUI login dialog"
+      - "AuthManager.login_with_http_credentials() authenticates via HTTP Basic"
+      - "On success (2xx/3xx): captures storage_state, creates PlaywrightConfig"
+      - "GUI stores pw_config; starts inactivity watcher"
+      - "SessionLogger opens per-user, per-session log file"
+      - "User can now retrieve, create, batch update"
+  
+  retrieval_flow:
+    steps:
+      - "User builds search filters in GUI (IP/Ticket/ID/User/Date/Active)"
+      - "GUI calls RetrievalEngine.retrieve(filters, config=pw_config)"
+      - "Engine uses config for authenticated HTTP request + HTML DOM parsing"
+      - "Results parsed into header + data rows"
+      - "GUI renders Treeview with fixed UTC columns"
+      - "Session logger records retrieval details + row count"
+  
+  create_flow:
+    steps:
+      - "User enters IP list, ticket, autoclose time, description"
+      - "GUI calls CreateBlackhole.submit_blackholes_http(..., config=pw_config)"
+      - "Creator POSTs to new.cgi for each IP with retry logic (3 attempts, 2 sec delay)"
+      - "Per-IP results include success status, response time"
+      - "GUI renders results; session logger records per-IP details"
+  
+  batch_update_flow:
+    steps:
+      - "User selects IDs + values (e.g., description, ticket, close)"
+      - "GUI calls BatchRemoval.batch_post_views(operations, config=pw_config)"
+      - "BatchRemoval creates PlaywrightClient with pooled context (ONE context reused)"
+      - "Thread pool executes operations concurrently (default: 5 workers)"
+      - "Per-operation result: {id, success, status, text}"
+      - "Single context reused across all operations (10x faster)"
+      - "Session logger records batch details + summary"
+  
+  inactivity_flow:
+    steps:
+      - "User activity detected (login, retrieve, create, batch)"
+      - "GUI calls touch_activity() to record timestamp"
+      - "Background watcher (_start_inactivity_watcher) checks every 1 second"
+      - "After 1 hour (or BH_INACTIVITY_TIMEOUT) with no activity"
+      - "Watcher calls _auto_logout(reason)"
+      - "Cooperative abort set on abort_event"
+      - "All worker threads gracefully stop"
+      - "Auth + Session resources closed"
+      - "Login state cleared; UI buttons disabled"
+      - "User notified: 'Session timed out due to inactivity'"
+  
+  shutdown_flow:
+    triggers: ["Ctrl+C", "window close", "SIGTERM"]
+    steps:
+      - "Set abort_event for all workers"
+      - "Wait up to 5 seconds for workers to finish"
+      - "Close AuthManager, SessionLogger"
+      - "Capture final session log snapshot"
+      - "Destroy GUI window"
+      - "Exit process"
+
+# ============================================================================
+# SECURITY & DATA HANDLING
+# ============================================================================
+security:
+  credentials:
+    storage: "Prompted at login; cached in PlaywrightConfig (immutable)"
+    propagation: "Passed to all modules via config object"
+    environment: "BH_HTTP_USER, BH_HTTP_PASS (read at login, cached in config)"
+    cleanup: "On logout or timeout, config is discarded"
+  
+  tls_verification:
+    default: "Ignore HTTPS errors (for internal CA)"
+    override: "Set BH_FORCE_SSL_VERIFY=1 for strict verification"
+  
+  data_handling:
+    sensitive_fields: "Not echoed to logs"
+    session_logs: "Append-only per-user file; no credentials logged"
+    csv_export: "Includes Description and full Ticket fields"
+  
+  file_permissions:
+    session_logs_dir: "Created relative to app base (with fallback)"
+    file_encoding: "UTF-8"
+    cleanup_policy: "Old session logs retained for auditing"
+
+# ============================================================================
+# DEBUGGING & TROUBLESHOOTING
+# ============================================================================
+debugging:
+  common_errors:
+    - "401 Unauthorized: Verify BH_HTTP_USER/PASS are correct and user has portal access"
+    - "TLS handshake error: Default ignores HTTPS errors; set BH_FORCE_SSL_VERIFY=1 for strict mode"
+    - "No rows parsed: Check filters, endpoint availability, session validity"
+    - "Timeout during batch: Increase timeout parameter or check network connectivity"
+    - "No session log created: Check session_logs/ directory permissions"
+  
+  verification_checklist:
+    - "Login success message displayed in GUI"
+    - "Session log file created in session_logs/ directory"
+    - "Structured retrieval shows results in fixed UTC grid"
+    - "Status bar updates on user actions"
+    - "Inactivity watcher running (check logs)"
+    - "All Python modules compile without syntax errors"
+  
+  logging_configuration:
+    module: "logging (Python standard)"
+    level: "INFO (default)"
+    handlers: "StreamHandler (stderr)"
+    format: "%(asctime)s %(levelname)s %(name)s: %(message)s"
+
+# ============================================================================
+# PERFORMANCE & SCALABILITY
+# ============================================================================
+performance:
+  concurrent_operations:
+    retrieval: "Up to 16 concurrent workers (configurable)"
+    create: "Up to 16 concurrent workers (configurable)"
+    batch_update: "Up to 5 concurrent workers with pooled context"
+  
+  connection_pooling:
+    strategy: "Single Playwright request context reused across all batch operations"
+    efficiency_gain: "10x faster than per-operation context creation/destruction"
+    test_scale: "Validated with 100+ batch operations"
+  
+  memory_footprint:
+    browser_instance: "One per session (shared config)"
+    request_contexts: "One per batch operation (pooled in PlaywrightClient)"
+    ui_updates: "Queue-based, non-blocking"
+
+# ============================================================================
+# INSTALLATION & DEPLOYMENT
+# ============================================================================
+requirements:
+  python: "3.10+"
+  dependencies:
+    - "playwright (sync API)"
+    - "tkinter (GUI framework, usually included with Python)"
+  
+  installation_steps:
+    - "pip install playwright"
+    - "python -m playwright install (downloads Chromium/Firefox/WebKit binaries)"
+    - "pip install --upgrade pip setuptools"
+  
+  packaging:
+    tools: ["PyInstaller", "cx_Freeze"]
+    notes:
+      - "Relative paths for session_logs/ fall back to executable directory if packaged"
+      - "TLS certificates: uses system CA store + ignore_https_errors by default"
+      - "Playwright binaries included in executable or downloaded at runtime"
+
+# ============================================================================
+# FEATURES & LIMITATIONS
+# ============================================================================
+features:
+  concurrent_operations: true
+  connection_pooling: true
+  inactivity_timeout: true
+  session_logging: true
+  graceful_shutdown: true
+  ip_validation: true
+  cidr_support: true
+  csv_export: true
+  thread_safe_ui: true
+  error_dialogs: true
+
+limitations:
+  - "GUI requires X11/display server (no headless mode for GUI itself)"
+  - "Playwright requires ~200MB disk space for browser binaries"
+  - "Inactivity timeout cannot be customized per-action (global 1 hour)"
+  - "No built-in support for proxy authentication (can be added)"
+  - "No dark mode (future feature)"
+
+# ============================================================================
+# VERSION HISTORY
+# ============================================================================
+versions:
+  "1.0":
+    release_date: "2026-01-18"
+    author: "Prajeet Pounraj (Information Security Engineer II)"
+    status: "Production-ready | Packaged as Windows .exe | Zero external dependencies on client machines"
+    highlights:
+      - "PlaywrightConfig immutable configuration object (shared across all modules)"
+      - "PlaywrightClient connection pooling for batch operations (~10x faster vs sequential)"
+      - "Inactivity-based auto-logout (1 hour default, configurable via BH_INACTIVITY_TIMEOUT env var)"
+      - "Concurrent multi-IP operations (retrieve, create, batch with bidirectional processing)"
+      - "Comprehensive session logging with async background writer (non-blocking to main thread)"
+      - "Graceful shutdown with cooperative abort events (all workers stop cleanly)"
+      - "Full error handling and resilience (per-IP retry logic: 3 attempts with 2-sec delays)"
+      - "IPv4 validation with blocked list (0.0.0.0, 127.x.x.x, broadcast, reserved addresses)"
+      - "CIDR notation support with automatic range expansion and filtering"
+      - "CSV export with all columns including hidden Description field"
+      - "Desktop logs auto-created on first run (C:\\Users\\{user}\\Desktop\\BlackholeAutomation_Logs\\)"
+      - "PyInstaller standalone .exe packaging (50 MB, no client dependencies)"
+      - "Comprehensive troubleshooting guide (20+ error scenarios with solutions)"
+      - "Performance metrics and timing documentation (per-IP baseline, pooling benefits)"
+      - "Multi-tab GUI (CREATE, RETRIEVE, UPDATE) with progress tracking"
+      - "Session-per-user logging with timestamped filenames"
+      - "Thread-safe UI updates via message queue"
+      - "Bidirectional IP retrieval (concurrent top-down and bottom-up processing)"
+      - "Support for 6 search modes (IP, Ticket, ID, User, Date, Active)"
+      - "Batch operations with 4 update actions (description, auto-close, ticket, close)"

@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
 **AuthManager.py**
-Created: December 2026
 Edited: January 2026
-Created by: Prajeet (DDoS Response Team)
+Created by: Prajeet Pounraj
 
 Authentication manager for Blackhole Automation using Playwright HTTP credentials.
 Handles login via HTTP Basic/Digest auth, captures and manages session state, and
@@ -150,7 +149,7 @@ class AuthManager:
         self.pw_config = None
         # Do not clear storage_state; downstream modules rely on it.
 
-# Optional CLI for quick smoke-test.
+# CLI for quick smoke-test. (TEMP..)
 if __name__ == "__main__":
     print("Auth helper for blackhole automation (HTTP credentials only)")
     try:

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 **BlackholeGUI.py**
-Created: December 2026
 Edited: January 2026
 Created by: Prajeet (DDoS Response Team)
 
@@ -72,13 +71,19 @@ def validate_ipv4(ip_str: str) -> bool:
     """
     # Blocklist of reserved/special IPs that should not be processed
     BLOCKED_IPS = {
-        "0.0.0.0",      # This network
-        "8.8.8.8",      # Google DNS
-        "8.8.4.4",      # Google DNS
-        "1.1.1.1",      # Cloudflare DNS
-        "1.0.0.1",      # Cloudflare DNS
-        "127.0.0.1",    # Localhost
-        "127.0.0.2",    # Localhost
+        "0.0.0.0",         # This network
+        "8.8.8.8",         # Google DNS
+        "8.8.4.4",         # Google DNS
+        "1.1.1.1",         # Cloudflare DNS
+        "1.0.0.1",         # Cloudflare DNS
+        "9.9.9.9",         # Quad9 DNS
+        "9.9.9.10",        # Quad9 DNS
+        "4.2.2.1",         # Level3 DNS
+        "4.2.2.2",         # Level3 DNS
+        "208.67.222.222",  # OpenDNS
+        "208.67.220.220",  # OpenDNS
+        "127.0.0.1",       # Localhost
+        "127.0.0.2",       # Localhost
         "255.255.255.255", # Broadcast
     }
     

@@ -1,7 +1,6 @@
 # Method Reference — Detailed Method & Class Documentation
 
-This document contains detailed API documentation for all modules. For quick start and operational guides, see [README.md](README.md).
-
+This document contains detailed API documentation for all modules.
 ---
 
 ## PlayWrightUtil.py — Playwright Utilities & Configuration

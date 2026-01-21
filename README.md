@@ -1,9 +1,8 @@
-# Blackhole Automation
+# Null Route Application (Public)
+Desktop GUI automation for the internal Lumen Blackhole portal. 
 
-> **Owner:** Prajeet Pounraj (Information Security Engineer II)  
-> **Status:** Production-ready | Deployable as standalone `.exe`
-
-Desktop GUI automation for the internal Lumen Blackhole portal. Built with Tkinter, Playwright HTTP client, async session logging, and connection pooling.
+> **Owner:** Prajeet
+> **Status:** BUG-FIX  | Deployable as standalone `.exe`
 
 **Key Features:**
 - Concurrent multi-IP operations (retrieve/create)
@@ -14,8 +13,6 @@ Desktop GUI automation for the internal Lumen Blackhole portal. Built with Tkint
 - Per-IP retry logic (3 attempts with delays)
 - Thread-safe UI updates
 - Desktop logs auto-created on first run
-
----
 
 ## Installation
 
@@ -47,8 +44,33 @@ python -m playwright install
 # Run locally
 python main_entry.py
 ```
+## Development & Building
+
+### Create Standalone .exe (For Distribution)
+
+**Prerequisites:**
+- Python 3.10+ (already installed)
+- venv100 activated
+
+**Steps:**
+
+```powershell
+# Step 1: Install PyInstaller (one-time)
+pip install pyinstaller
+
+# Step 2: Build .exe
+pyinstaller BlackholeAutomation.spec
+
+# Step 3: Test
+.\dist\BlackholeAutomation\BlackholeAutomation.exe
+
+```
+**Output:**
+- `dist/BlackholeAutomation.exe` — Standalone executable
+- `dist/BlackholeAutomation/` — All dependencies bundled (Playwright, pyee, greenlet)
 
 ---
+
 
 ## Usage Guide
 
@@ -93,37 +115,6 @@ python main_entry.py
 - **Associate Ticket** — Link ticket to all IDs
 - **Close Now** — Immediately close all IDs (requires confirmation)
 
-**Performance:** Connection pooling makes batch operations significantly faster.
-
----
-
-## Development & Building
-
-### Create Standalone .exe (For Distribution)
-
-**Prerequisites:**
-- Python 3.10+ (already installed)
-- venv100 activated
-
-**Steps:**
-
-```powershell
-# Step 1: Install PyInstaller (one-time)
-& "C:\Users\ad55004\OneDrive - Lumen\Desktop\Automation\venv100\Scripts\Activate.ps1"
-pip install pyinstaller
-
-# Step 2: Build .exe
-cd "C:\Users\ad55004\OneDrive - Lumen\Desktop\Automation"
-pyinstaller BlackholeAutomation.spec
-
-# Step 3: Test
-.\dist\BlackholeAutomation\BlackholeAutomation.exe
-
-```
-
-**Output:**
-- `dist/BlackholeAutomation.exe` — Standalone executable
-- `dist/BlackholeAutomation/` — All dependencies bundled (Playwright, pyee, greenlet)
 
 ---
 
@@ -149,8 +140,6 @@ ______________________________________________________________________
 3. **Async Session Logging** — Non-blocking queue-based background writer thread
 4. **Cooperative Abort** — Operations check abort event between iterations for graceful stops
 5. **Inactivity Auto-Logout** — 1-hour timeout with background watcher thread
-
-**For detailed API documentation, see [API_REFERENCE.md](API_REFERENCE.md)**
 
 ---
 
@@ -231,9 +220,6 @@ A: No. Password used only for HTTP login; session ends on logout or 1-hour timeo
 **Q: Can I export bulk IPs?**  
 A: Yes. Paste IPs into CREATE/RETRIEVE; export via "Export Results (CSV)"; copy rows as TSV.
 
-**Q: Multiple users simultaneously?**  
-A: Yes. Each user gets timestamped session log; Desktop logs folder is per-user.
-
 **Q: Update to new version?**  
 A: Download new .exe; replace old one; run. Session logs auto-created.
 
@@ -242,28 +228,6 @@ A: No hard limit. Tested with 100+ IPs. Recommend batching < 500 IPs for clarity
 
 ---
 
-## Project Files
-
-
-| File                       | Purpose                          |
-|----------------------------|----------------------------------|
-| `main_entry.py`            | Entry point; ensures logs folder |
-| `BlackholeAutomation.spec` | PyInstaller config               |
-| `requirements.txt`         | Python dependencies              |
-| `Build_Reqs.yaml`          | Architecture notes               |
-| `README.md`                | Main documentation               |
-| `API_REFERENCE.md`         | Detailed method/class API        |
-| `AuthManager.py`           | HTTP authentication              |
-| `PlayWrightUtil.py`        | Playwright utilities             |
-| `RetrievalEngine.py`       | Retrieval engine                 |
-| `CreateBlackhole.py`       | Creation logic                   |
-| `BatchRemoval.py`          | Batch operations                 |
-| `SessionLogger.py`         | Session logging                  |
-| `BlackholeGUI.py`          | Main GUI controller              |
-
-
----
-
-**Status:** Production-ready | Deployable as standalone `.exe` | No external dependencies on client machines
+**Status:** BUG-FIX 
 
 **Repository:** https://github.com/Prajeet-Lumen/Blackhole_Automation

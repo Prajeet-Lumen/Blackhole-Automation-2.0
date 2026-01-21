@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
 **PlayWrightUtil.py**
-Created: December 2026
 Edited: January 2026
-Created by: Prajeet (DDoS Response Team)
+Created by: Prajeet Pounraj
 
 Centralized Playwright utilities for request context creation, cleanup, and TLS/credential handling.
 Provides PlaywrightConfig (immutable configuration object) and PlaywrightClient (pooled request

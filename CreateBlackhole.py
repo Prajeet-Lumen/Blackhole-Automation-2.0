@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
 **CreateBlackhole.py**
-Created: December 2026
 Edited: January 2026
-Created by: Prajeet (DDoS Response Team)
+Created by: Prajeet Pounraj
 
 Create blackholes via HTTP POST to new.cgi endpoint. Accepts optional PlaywrightConfig for
 connection pooling and credential sharing; falls back to env-var reading if not provided.

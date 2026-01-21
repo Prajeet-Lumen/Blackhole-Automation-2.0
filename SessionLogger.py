@@ -2,9 +2,8 @@
 #!/usr/bin/env python3
 """
 **SessionLogger.py**
-Created: December 2026
 Edited: January 2026
-Created by: Prajeet (DDoS Response Team)
+Created by: Prajeet Pounraj
 
 Session-logging utility that writes timestamped entries to a per-user,
 per-run log file (session_logs/SESSION_<date>_<time>_<user>.log). 

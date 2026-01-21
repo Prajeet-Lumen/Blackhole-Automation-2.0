@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
 **main_entry.py**
-Created: January 2026
 Edited: January 2026
-Created by: Prajeet (DDoS Response Team)
+Created by: Prajeet Pounraj
 
 Entry point for the packaged .exe. Ensures desktop log folder structure exists
 before launching the GUI. This script is the primary target for PyInstaller to create

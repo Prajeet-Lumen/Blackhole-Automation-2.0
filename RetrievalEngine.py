@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
 **RetrievalEngine.py**
-Created: December 2026
 Edited: January 2026
-Created by: Prajeet (DDoS Response Team)
+Created by: Prajeet Pounraj
 
 Retrieval engine for the internal Blackhole site using Playwright HTTP requests.
 Supports structured HTTP retrieval with query filtering (by ID, ticket, IP, user, date, or active holes).
@@ -236,6 +235,4 @@ class RetrievalEngine:
     # -------------------- Public API --------------------
     def retrieve(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
         return self._http_fetch_and_parse(filters)
-    # NOTE: GUI autofill/browser flow removed for deployment; retrieval is
-    # exposed via `retrieve(filters)` which uses Playwright HTTP request
-    # contexts and headless parsing. The browser-based helper has been removed.
+    # NOTE: GUI autofill/browser flow removed. (The browser-based helper has been removed.)

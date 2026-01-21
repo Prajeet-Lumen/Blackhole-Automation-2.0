@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
 **BatchRemoval.py**
-Created: December 2026
 Edited: January 2026
-Created by: Prajeet (DDoS Response Team)
+Created by: Prajeet Pounraj
 
 Batch update engine for blackhole records (description, auto-close time, ticket association, close).
 Provides individual POST operations via view_details_html and set_* methods, plus a high-performance

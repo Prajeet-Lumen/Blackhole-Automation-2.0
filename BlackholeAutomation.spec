@@ -31,7 +31,7 @@ a = Analysis(
     ['main_entry.py'],
     pathex=[],
     binaries=[],
-    datas=all_datas,
+    datas=all_datas + [('README.md', '.')],  # Bundle README.md for Help menu
     hiddenimports=[
         'AuthManager',
         'RetrievalEngine',

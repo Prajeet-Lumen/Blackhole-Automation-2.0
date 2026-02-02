@@ -19,12 +19,18 @@ import threading
 import re
 import signal
 import sys
-from typing import List, Optional, Callable, Any, Dict
+import itertools
+from typing import List, Optional, Callable, Any, Dict, Tuple, TYPE_CHECKING
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, scrolledtext
 import logging
+from pathlib import Path
 
 # --- Local modules ---
+try:
+    import theme
+except Exception:
+    theme = None
 try:
     from AuthManager import AuthManager
 except Exception:
@@ -51,6 +57,10 @@ try:
 except Exception:
     SessionLogger = None
     ensure_session_dir = None
+
+if TYPE_CHECKING:
+    from SessionLogger import SessionLogger
+    from BatchRemoval import BatchRemoval
 
 # Logging to stderr for critical errors and diagnostics
 logger = logging.getLogger(__name__)
@@ -213,16 +223,25 @@ class BlackholeGUI:
         self.abort_event = threading.Event()
         # Optional override for shutdown wait time (seconds) set per long job
         self._shutdown_wait_override: Optional[int] = None
+        # Track the after callback ID for queue pump
+        self._check_queue_after_id: Optional[str] = None
         # Track progress: { task_name: { 'total': int, 'processed': int, 'aborted': bool } }
         self.task_progress: Dict[str, Dict[str, Any]] = {}
         self.progress_lock = threading.Lock()
 
-        # Configure notebook tab style to make tabs taller
-        style = ttk.Style()
-        style.configure('TNotebook.Tab', padding=[20, 12])
+        # Dark mode toggle (now handled by main_entry.py and theme.py)
+        self.dark_mode = tk.BooleanVar(value=False)
+        diag_env = os.environ.get("BH_DIAGNOSTICS", "").strip().lower()
+        self.diagnostics_enabled = tk.BooleanVar(value=diag_env in {"1", "true", "on", "yes"})
+        self._job_counter = itertools.count(1)
+        self._last_status_scope: Optional[str] = None
+        self._last_status_text: str = "Ready"
 
-        # Top-level layout (window-wide)
-        self.mainframe = ttk.Frame(root, padding="8 8 8 8")
+        # Menu bar
+        self._create_menu_bar()
+
+        # Top-level layout (window-wide) - minimal padding for modern look
+        self.mainframe = ttk.Frame(root, padding="4 4 4 4")
         self.mainframe.grid(column=0, row=0, sticky=("nsew"))
         root.columnconfigure(0, weight=1)
         root.rowconfigure(0, weight=1)
@@ -243,13 +262,20 @@ class BlackholeGUI:
         ttk.Separator(self.mainframe, orient=tk.HORIZONTAL).grid(column=0, row=1, sticky="ew", pady=(6, 6))
         ip_global = ttk.Frame(self.mainframe)
         ip_global.grid(column=0, row=2, sticky="nsew")
-        self.mainframe.rowconfigure(2, weight=2)
+        self.mainframe.rowconfigure(2, weight=1)
         ip_global.columnconfigure(0, weight=1)
-        ttk.Label(ip_global, text="Paste IPs (one-per-line or space-separated):").grid(column=0, row=0, sticky=tk.W, padx=6, pady=(0, 3))
-        ttk.Label(ip_global, text="(/32 will be added to bare IPs)", foreground="gray").grid(column=0, row=1, sticky=tk.W, padx=6, pady=(0, 6))
-        self.ip_text = tk.Text(ip_global, height=10, wrap=tk.WORD)
-        self.ip_text.grid(column=0, row=2, sticky="nsew", padx=6, pady=6)
         ip_global.rowconfigure(2, weight=1)
+        ttk.Label(ip_global, text="Paste IPs (one-per-line or space-separated):").grid(column=0, row=0, sticky=tk.W, padx=6, pady=(0, 3))
+        self.ip_hint_label = ttk.Label(ip_global, text="(/32 will be added to bare IPs)", style="Secondary.TLabel")
+        self.ip_hint_label.grid(column=0, row=1, sticky=tk.W, padx=6, pady=(0, 6))
+        
+        # IP text with scrollbar
+        ip_scroll = ttk.Scrollbar(ip_global, orient=tk.VERTICAL)
+        self.ip_text = tk.Text(ip_global, height=8, wrap=tk.WORD, yscrollcommand=ip_scroll.set, borderwidth=2, relief="solid")
+        self.ip_text.grid(column=0, row=2, sticky="nsew", padx=(6, 0), pady=6)
+        ip_scroll.grid(column=1, row=2, sticky="ns", pady=6)
+        ip_scroll.config(command=self.ip_text.yview)
+        ip_global.columnconfigure(1, weight=0)
 
         # Open Date (state variables)
         self.open_date_month_var = tk.StringVar(value="January")
@@ -258,20 +284,20 @@ class BlackholeGUI:
         # Notebook with three tabs (Create | Retrieve | Update)
         self.notebook = ttk.Notebook(self.mainframe)
         self.notebook.grid(column=0, row=3, sticky=("nsew"), pady=(8, 8))
-        self.mainframe.rowconfigure(3, weight=3)
+        self.mainframe.rowconfigure(3, weight=4)
 
         # --- Create Tab ---
-        self.tab_create = ttk.Frame(self.notebook, padding="12 12 12 12")
+        self.tab_create = ttk.Frame(self.notebook, padding="6 6 6 6")
         self.notebook.add(self.tab_create, text="CREATE")
         self._build_create_tab()
 
         # --- Retrieve Tab ---
-        self.tab_retrieve = ttk.Frame(self.notebook, padding="12 12 12 12")
+        self.tab_retrieve = ttk.Frame(self.notebook, padding="6 6 6 6")
         self.notebook.add(self.tab_retrieve, text="RETRIEVE")
         self._build_retrieve_tab()
 
         # --- Update Tab ---
-        self.tab_update = ttk.Frame(self.notebook, padding="12 12 12 12")
+        self.tab_update = ttk.Frame(self.notebook, padding="6 6 6 6")
         self.notebook.add(self.tab_update, text="UPDATE")
         self._build_update_tab()
 
@@ -279,11 +305,18 @@ class BlackholeGUI:
         ttk.Separator(self.mainframe, orient=tk.HORIZONTAL).grid(column=0, row=4, sticky="ew", pady=(8, 8))
         log_frame = ttk.Frame(self.mainframe)
         log_frame.grid(column=0, row=5, sticky="nsew")
-        self.mainframe.rowconfigure(5, weight=2)
+        self.mainframe.rowconfigure(5, weight=1)
         log_frame.columnconfigure(0, weight=1)
+        log_frame.rowconfigure(1, weight=1)
         ttk.Label(log_frame, text="Log / Status:").grid(column=0, row=0, sticky=tk.W, padx=6, pady=(0, 4))
-        self.result_text = tk.Text(log_frame, height=14, wrap=tk.WORD, state=tk.DISABLED)
-        self.result_text.grid(column=0, row=1, sticky="nsew", padx=6, pady=6)
+        
+        # Log text with scrollbar
+        log_scroll = ttk.Scrollbar(log_frame, orient=tk.VERTICAL)
+        self.result_text = tk.Text(log_frame, height=10, wrap=tk.WORD, state=tk.DISABLED, yscrollcommand=log_scroll.set, borderwidth=2, relief="solid")
+        self.result_text.grid(column=0, row=1, sticky="nsew", padx=(6, 0), pady=6)
+        log_scroll.grid(column=1, row=1, sticky="ns", pady=6)
+        log_scroll.config(command=self.result_text.yview)
+        log_frame.columnconfigure(1, weight=0)
 
         # Bottom status bar
         status_bar = ttk.Frame(self.mainframe)
@@ -301,48 +334,157 @@ class BlackholeGUI:
         self._table_rows_full: List[List[str]] = []
         self.message_queue: queue.Queue = queue.Queue()
 
+        # Apply theme styling to Text widgets and root window background
+        self._style_text_widgets()
+        self._update_root_background()
+
         # Queue pump
         self._check_queue()
 
     # --------------------------
     # Build Tabs
     # --------------------------
+    def _update_root_background(self) -> None:
+        """Update root window background to match theme."""
+        try:
+            tokens = theme.get_tokens()
+            self.root.configure(background=tokens.bg)
+        except Exception as e:
+            logger.exception(f"Failed to update root background: {e}")
+    
+    def _style_text_widgets(self) -> None:
+        """Apply current theme colors to Text widgets."""
+        try:
+            tokens = theme.get_tokens()
+            fonts = theme.get_fonts()
+            
+            # Style IP text widget
+            self.ip_text.configure(
+                background=tokens.bg_panel,
+                foreground=tokens.text,
+                insertbackground=tokens.text,
+                selectbackground=tokens.accent,
+                selectforeground=tokens.bg_panel,
+                highlightthickness=0,
+                relief="flat",
+                font=fonts.monospace,
+                padx=4,
+                pady=4,
+            )
+            
+            # Style log/result text widget
+            self.result_text.configure(
+                background=tokens.bg_panel,
+                foreground=tokens.text,
+                insertbackground=tokens.text,
+                selectbackground=tokens.accent,
+                selectforeground=tokens.bg_panel,
+                highlightthickness=0,
+                relief="flat",
+                font=fonts.monospace,
+                padx=4,
+                pady=4,
+            )
+        except Exception as e:
+            logger.exception(f"Failed to style text widgets: {e}")
+    
+    def refresh_theme(self) -> None:
+        """Refresh theme styling for all widgets. Called when theme is switched."""
+        try:
+            # Force theme system to recreate Style object
+            theme._style = None
+            
+            # Re-apply the current theme completely from scratch
+            if self.dark_mode.get():
+                theme.apply_theme(self.root, "lumen.dark")
+            else:
+                theme.apply_theme(self.root, "lumen.light")
+            
+            # Update text widgets and root background
+            self._style_text_widgets()
+            self._update_root_background()
+            
+            tokens = theme.get_tokens()
+            
+            # Force all ttk widgets to update by walking the tree
+            def force_refresh(widget):
+                try:
+                    widget_class = widget.winfo_class()
+                    if widget_class.startswith('T'):  # ttk widgets
+                        # Force style reapplication
+                        try:
+                            current_style = widget.cget('style')
+                            if current_style:
+                                widget.configure(style=current_style)
+                            # Special handling for Combobox to update dropdown colors
+                            if widget_class == 'TCombobox':
+                                widget.configure(
+                                    style="TCombobox",
+                                    foreground=tokens.text,
+                                    background=tokens.bg_panel,
+                                    fieldbackground=tokens.bg_panel
+                                )
+                        except Exception:
+                            pass
+                    
+                    # Process all children
+                    for child in widget.winfo_children():
+                        force_refresh(child)
+                except Exception:
+                    pass
+            
+            # Apply to entire widget tree
+            force_refresh(self.root)
+            
+            # Force complete redraw
+            self.root.update_idletasks()
+            self.root.update()
+            
+        except Exception as e:
+            logger.exception(f"Failed to refresh theme completely: {e}")
+    
     def _build_create_tab(self) -> None:
         f = self.tab_create
         # Grid config for resize
         for c in range(0, 6):
             f.columnconfigure(c, weight=1)
 
-        ttk.Label(f, text="CREATE", font=("Segoe UI", 12, "bold")).grid(column=0, row=0, sticky=tk.W, padx=6, pady=(0, 6))
-        ttk.Separator(f, orient=tk.HORIZONTAL).grid(column=0, row=1, columnspan=6, sticky="ew", padx=6, pady=(0, 6))
+        ttk.Label(f, text="CREATE", font=("Segoe UI", 10, "bold")).grid(column=0, row=0, sticky=tk.W, padx=6, pady=(0, 4))
+        ttk.Separator(f, orient=tk.HORIZONTAL).grid(column=0, row=1, columnspan=6, sticky="ew", padx=6, pady=(0, 4))
 
         # Row for fields (compact horizontal grouping)
-        ttk.Label(f, text="Ticket system:").grid(column=0, row=2, sticky=tk.W, padx=6, pady=6)
+        ttk.Label(f, text="Ticket system:").grid(column=0, row=2, sticky=tk.W, padx=6, pady=4)
         self.ticket_system = ttk.Combobox(f, values=["NTM-Remedy", "Clarify", "Vantive"], state="readonly", width=18)
         self.ticket_system.set("NTM-Remedy")
-        self.ticket_system.grid(column=1, row=2, sticky="ew", padx=6, pady=6)
+        self.ticket_system.grid(column=1, row=2, sticky="ew", padx=6, pady=4)
 
-        ttk.Label(f, text="Ticket number:").grid(column=2, row=2, sticky=tk.W, padx=6, pady=6)
+        ttk.Label(f, text="Ticket number:").grid(column=2, row=2, sticky=tk.W, padx=6, pady=4)
         self.ticket_number_var = tk.StringVar()
-        ttk.Entry(f, textvariable=self.ticket_number_var).grid(column=3, row=2, sticky="ew", padx=6, pady=6)
+        ttk.Entry(f, textvariable=self.ticket_number_var).grid(column=3, row=2, sticky="ew", padx=6, pady=4)
 
-        ttk.Label(f, text="Auto-close (blank = No Auto-close):").grid(column=0, row=3, sticky=tk.W, padx=6, pady=6)
+        ttk.Label(f, text="Auto-close (blank = No Auto-close):").grid(column=0, row=3, sticky=tk.W, padx=6, pady=4)
         self.auto_close_var = tk.StringVar(value="+2d")
-        ttk.Entry(f, textvariable=self.auto_close_var).grid(column=1, row=3, sticky="ew", padx=6, pady=6)
+        ttk.Entry(f, textvariable=self.auto_close_var).grid(column=1, row=3, sticky="ew", padx=6, pady=4)
 
-        ttk.Label(f, text="Description:").grid(column=2, row=3, sticky=tk.W, padx=6, pady=6)
+        ttk.Label(f, text="Description:").grid(column=2, row=3, sticky=tk.W, padx=6, pady=4)
         self.description_var = tk.StringVar()
-        ttk.Entry(f, textvariable=self.description_var).grid(column=3, row=3, sticky="ew", padx=6, pady=6)
+        ttk.Entry(f, textvariable=self.description_var).grid(column=3, row=3, sticky="ew", padx=6, pady=4)
 
         # Create button + status
         btn_frame = ttk.Frame(f)
-        btn_frame.grid(column=0, row=4, columnspan=6, sticky="ew", padx=6, pady=(12, 6))
+        btn_frame.grid(column=0, row=4, columnspan=6, sticky="ew", padx=6, pady=(8, 4))
         btn_frame.columnconfigure(0, weight=0)
         btn_frame.columnconfigure(1, weight=1)
         self.run_button = ttk.Button(btn_frame, text="Create Blackholes", command=self.on_create_http)
         self.run_button.grid(column=0, row=0, sticky=tk.W)
         self.create_status_var = tk.StringVar(value="Ready")
-        ttk.Label(btn_frame, textvariable=self.create_status_var, foreground="gray").grid(column=1, row=0, sticky="w", padx=(12, 0))
+        self.create_status_label = ttk.Label(btn_frame, textvariable=self.create_status_var, style="Secondary.TLabel")
+        self.create_status_label.grid(column=1, row=0, sticky="w", padx=(8, 0))
+        
+        # Progress bar for create operations
+        self.create_progress = ttk.Progressbar(f, mode='determinate', length=500)
+        self.create_progress.grid(column=0, row=5, columnspan=6, sticky="ew", padx=6, pady=4)
+        self.create_progress.grid_remove()  # Hidden by default
 
     def _build_retrieve_tab(self) -> None:
         f = self.tab_retrieve
@@ -351,11 +493,11 @@ class BlackholeGUI:
             f.columnconfigure(c, weight=1)
         f.rowconfigure(6, weight=2)  # results frame grows
 
-        ttk.Label(f, text="RETRIEVE", font=("Segoe UI", 12, "bold")).grid(column=0, row=0, sticky=tk.W, padx=6, pady=(0, 6))
-        ttk.Separator(f, orient=tk.HORIZONTAL).grid(column=0, row=1, columnspan=8, sticky="ew", padx=6, pady=(0, 6))
+        ttk.Label(f, text="RETRIEVE", font=("Segoe UI", 10, "bold")).grid(column=0, row=0, sticky=tk.W, padx=6, pady=(0, 4))
+        ttk.Separator(f, orient=tk.HORIZONTAL).grid(column=0, row=1, columnspan=8, sticky="ew", padx=6, pady=(0, 4))
 
         # Controls row
-        ttk.Label(f, text="Search by:").grid(column=0, row=2, sticky=tk.W, padx=6, pady=6)
+        ttk.Label(f, text="Search by:").grid(column=0, row=2, sticky=tk.W, padx=6, pady=4)
         # NOTE: 'Display on Web (GUI)' feature removed.
 
         self.search_by = ttk.Combobox(
@@ -365,13 +507,24 @@ class BlackholeGUI:
             width=20,
         )
         self.search_by.set("IP Address")
-        self.search_by.grid(column=2, row=2, sticky="ew", padx=6, pady=6)
+        self.search_by.grid(column=2, row=2, sticky="ew", padx=6, pady=4)
         self.search_by.bind("<<ComboboxSelected>>", self._on_search_by_changed)
 
         # Single free-text field (used only for Blackhole ID #, Ticket #, Opened by)
         self.search_value_var = tk.StringVar()
         self.search_value_entry = ttk.Entry(f, textvariable=self.search_value_var)
-        self.search_value_entry.grid(column=3, row=2, sticky="ew", padx=6, pady=6)
+        self.search_value_entry.grid(column=3, row=2, sticky="ew", padx=6, pady=4)
+        
+        # Ticket system dropdown (shown only for Ticket # search)
+        self.retrieve_ticket_sys_label = ttk.Label(f, text="Ticket system:")
+        self.retrieve_ticket_sys_var = tk.StringVar(value="NTM-Remedy")
+        self.retrieve_ticket_sys = ttk.Combobox(
+            f,
+            values=["NTM-Remedy", "Clarify", "Vantive"],
+            state="readonly",
+            textvariable=self.retrieve_ticket_sys_var,
+            width=15
+        )
 
         # Month/Year (shown only for Open Date)
         self.open_date_month_label = ttk.Label(f, text="Month:")
@@ -398,6 +551,11 @@ class BlackholeGUI:
         # Retrieve button (status shown in global Log / Status area)
         self.retrieve_button = ttk.Button(f, text="Retrieve", command=self.on_retrieve)
         self.retrieve_button.grid(column=7, row=2, sticky="e", padx=6)
+        
+        # Progress bar for retrieve operations
+        self.retrieve_progress = ttk.Progressbar(f, mode='determinate', length=400)
+        self.retrieve_progress.grid(column=0, row=3, columnspan=8, sticky="ew", padx=6, pady=6)
+        self.retrieve_progress.grid_remove()  # Hidden by default
 
         # Results area
         ttk.Label(f, text="Results:").grid(column=0, row=4, sticky=tk.W, padx=6, pady=(6, 2))
@@ -412,11 +570,14 @@ class BlackholeGUI:
         actions_row.grid(column=0, row=7, columnspan=8, sticky="ew", padx=6, pady=(4, 0))
         actions_row.columnconfigure(0, weight=0)
         actions_row.columnconfigure(1, weight=0)
-        actions_row.columnconfigure(2, weight=1)
+        actions_row.columnconfigure(2, weight=0)
+        actions_row.columnconfigure(3, weight=1)
         self.copy_button = ttk.Button(actions_row, text="Copy Selected", command=self.on_copy_selected)
         self.copy_button.grid(column=0, row=0, sticky=tk.W)
         self.export_button = ttk.Button(actions_row, text="Export Results (CSV)", command=self.on_export_results)
         self.export_button.grid(column=1, row=0, sticky=tk.W, padx=(8, 0))
+        self.load_selection_button = ttk.Button(actions_row, text="Load for Batch Update →", command=self._batch_load_ids_from_table, style='Accent.TButton')
+        self.load_selection_button.grid(column=2, row=0, sticky=tk.W, padx=(8, 0))
 
         # Ensure correct initial visibility
         self._update_search_mode_ui(initial=True)
@@ -426,42 +587,48 @@ class BlackholeGUI:
         # Grid for resize
         for c in range(0, 6):
             f.columnconfigure(c, weight=1)
+        for r in range(9):
+            f.rowconfigure(r, weight=0)
 
-        ttk.Label(f, text="UPDATE", font=("Segoe UI", 12, "bold")).grid(column=0, row=0, sticky=tk.W, padx=6, pady=(0, 6))
-        ttk.Separator(f, orient=tk.HORIZONTAL).grid(column=0, row=1, columnspan=6, sticky="ew", padx=6, pady=(0, 6))
+        ttk.Label(f, text="UPDATE", font=("Segoe UI", 10, "bold")).grid(column=0, row=0, sticky=tk.W, padx=6, pady=(0, 4))
+        ttk.Separator(f, orient=tk.HORIZONTAL).grid(column=0, row=1, columnspan=6, sticky="ew", padx=6, pady=(0, 4))
 
         # IDs row
-        ttk.Label(f, text="Blackhole ID(s):").grid(column=0, row=2, sticky=tk.W, padx=6, pady=6)
+        ttk.Label(f, text="Blackhole ID(s):").grid(column=0, row=2, sticky=tk.W, padx=6, pady=4)
         self.batch_ids_var = tk.StringVar()
-        ttk.Entry(f, textvariable=self.batch_ids_var).grid(column=1, row=2, sticky="ew", padx=6, pady=6)
-        ttk.Button(f, text="Load from selection", command=self._batch_load_ids_from_table).grid(column=2, row=2, sticky="w", padx=6, pady=6)
-        ttk.Button(f, text="Collect IDs from IPs", command=self.on_collect_ids_from_pasted_ips).grid(column=3, row=2, sticky="w", padx=6, pady=6)
+        ttk.Entry(f, textvariable=self.batch_ids_var).grid(column=1, row=2, columnspan=2, sticky="ew", padx=6, pady=4)
+        ttk.Button(f, text="Collect IDs from IPs", command=self.on_collect_ids_from_pasted_ips).grid(column=3, row=2, sticky="w", padx=6, pady=4)
 
         # Description row
-        ttk.Label(f, text="Description:").grid(column=0, row=3, sticky=tk.W, padx=6, pady=6)
+        ttk.Label(f, text="Description:").grid(column=0, row=3, sticky=tk.W, padx=6, pady=4)
         self.batch_desc_var = tk.StringVar()
-        ttk.Entry(f, textvariable=self.batch_desc_var).grid(column=1, row=3, sticky="ew", padx=6, pady=6)
-        ttk.Button(f, text="Set Description", command=self.on_batch_set_description).grid(column=2, row=3, sticky="w", padx=6, pady=6)
+        ttk.Entry(f, textvariable=self.batch_desc_var).grid(column=1, row=3, sticky="ew", padx=6, pady=4)
+        ttk.Button(f, text="Set Description", command=self.on_batch_set_description).grid(column=2, row=3, sticky="w", padx=6, pady=4)
 
         # Auto-close row
-        ttk.Label(f, text="Auto-close time (blank = No Auto-close):").grid(column=0, row=4, sticky=tk.W, padx=6, pady=6)
+        ttk.Label(f, text="Auto-close time (blank = No Auto-close):").grid(column=0, row=4, sticky=tk.W, padx=6, pady=4)
         self.batch_close_text_var = tk.StringVar(value="+2d")
-        ttk.Entry(f, textvariable=self.batch_close_text_var).grid(column=1, row=4, sticky="ew", padx=6, pady=6)
-        ttk.Button(f, text="Set Auto-close", command=self.on_batch_set_autoclose).grid(column=2, row=4, sticky="w", padx=6, pady=6)
+        ttk.Entry(f, textvariable=self.batch_close_text_var).grid(column=1, row=4, sticky="ew", padx=6, pady=4)
+        ttk.Button(f, text="Set Auto-close", command=self.on_batch_set_autoclose).grid(column=2, row=4, sticky="w", padx=6, pady=4)
 
         # Ticket row
-        ttk.Label(f, text="Ticket system:").grid(column=0, row=5, sticky=tk.W, padx=6, pady=6)
+        ttk.Label(f, text="Ticket system:").grid(column=0, row=5, sticky=tk.W, padx=6, pady=4)
         self.batch_ticket_sys_var = tk.StringVar(value="Clarify")
-        ttk.Combobox(f, values=["NTM-Remedy", "Clarify", "Vantive"], state="readonly", textvariable=self.batch_ticket_sys_var, width=15).grid(column=1, row=5, sticky="w", padx=6, pady=6)
-        ttk.Label(f, text="Ticket #").grid(column=2, row=5, sticky=tk.W, padx=6, pady=6)
+        ttk.Combobox(f, values=["NTM-Remedy", "Clarify", "Vantive"], state="readonly", textvariable=self.batch_ticket_sys_var, width=15).grid(column=1, row=5, sticky="w", padx=6, pady=4)
+        ttk.Label(f, text="Ticket #").grid(column=2, row=5, sticky=tk.W, padx=6, pady=4)
         self.batch_ticket_num_var = tk.StringVar()
-        ttk.Entry(f, textvariable=self.batch_ticket_num_var).grid(column=3, row=5, sticky="ew", padx=6, pady=6)
-        ttk.Button(f, text="Associate Ticket", command=self.on_batch_associate_ticket).grid(column=4, row=5, sticky="w", padx=6, pady=6)
+        ttk.Entry(f, textvariable=self.batch_ticket_num_var).grid(column=3, row=5, sticky="ew", padx=6, pady=4)
+        ttk.Button(f, text="Associate Ticket", command=self.on_batch_associate_ticket).grid(column=4, row=5, sticky="w", padx=6, pady=4)
 
         # Close Now row
-        ttk.Button(f, text="Close Now (confirm)", command=self.on_batch_close_now).grid(column=0, row=6, sticky="w", padx=6, pady=(12, 6))
+        ttk.Button(f, text="Close Now (confirm)", command=self.on_batch_close_now).grid(column=0, row=6, sticky="w", padx=6, pady=(8, 4))
+        
+        # Progress bar for batch operations
+        self.update_progress = ttk.Progressbar(f, mode='determinate', length=500)
+        self.update_progress.grid(column=0, row=7, columnspan=6, sticky="ew", padx=6, pady=4)
+        self.update_progress.grid_remove()  # Hidden by default
 
-        ttk.Separator(f, orient=tk.HORIZONTAL).grid(column=0, row=7, columnspan=6, sticky="ew", padx=6, pady=(6, 6))
+        ttk.Separator(f, orient=tk.HORIZONTAL).grid(column=0, row=8, columnspan=6, sticky="ew", padx=6, pady=(4, 6))
 
     # --------------------------
     # Queue pump
@@ -477,8 +644,8 @@ class BlackholeGUI:
                 if msg_type == "log":
                     try:
                         logger.info(msg_data)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.exception("Failed to write queued log message: %s", exc)
                     self.log(msg_data)
                 elif msg_type == "error":
                     logger.error("Queued error: %s", msg_data)
@@ -495,10 +662,24 @@ class BlackholeGUI:
                     except Exception:
                         logger.exception("Failed to show info messagebox")
                 elif msg_type == "status":
+                    if isinstance(msg_data, tuple):
+                        status_text, scope = msg_data
+                    else:
+                        status_text, scope = msg_data, None
                     try:
-                        self.status_var.set(msg_data)
+                        self._last_status_scope = scope
+                        self._last_status_text = status_text
+                        decorated = self._decorate_status(status_text, scope)
+                        self.status_var.set(decorated)
                     except Exception:
                         logger.exception("Failed to set status_var")
+                elif msg_type == "warning":
+                    try:
+                        logger.warning("Queued warning: %s", msg_data)
+                        self.log(msg_data)
+                        messagebox.showwarning("Warning", msg_data)
+                    except Exception:
+                        logger.exception("Failed to show warning messagebox")
                 elif msg_type == "call":
                     # Execute a callable on the main thread: (callable, args, kwargs)
                     try:
@@ -511,7 +692,12 @@ class BlackholeGUI:
         
         # Reschedule queue pump unless shutdown is signaled
         if not self.shutdown_event.is_set():
-            self.root.after(100, self._check_queue)
+            try:
+                self._check_queue_after_id = self.root.after(100, self._check_queue)
+            except tk.TclError:
+                # Widget destroyed, stop scheduling
+                logger.debug("Widget destroyed, stopping queue pump")
+                return
 
     # --------------------------
     # Inactivity tracking / auto-logout
@@ -571,8 +757,8 @@ class BlackholeGUI:
             # Signal cooperative abort to background workers
             try:
                 self.abort_event.set()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.exception("Failed to raise abort event during auto-logout: %s", exc)
 
             # Close auth manager (Playwright resources)
             try:
@@ -586,8 +772,8 @@ class BlackholeGUI:
                 if self.session_logger:
                     try:
                         self.session_logger.append("[AUTO-LOGOUT] Session closed due to inactivity")
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("Failed to append auto-logout entry: %s", exc)
                     try:
                         self.session_logger.close()
                     except Exception:
@@ -600,17 +786,17 @@ class BlackholeGUI:
             try:
                 self.logged_in = False
                 self.logged_in_user = None
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.exception("Failed to reset login state during auto-logout: %s", exc)
 
             # Notify user via message queue (will show messagebox on main thread)
             try:
                 self.message_queue.put(("info", "Session timed out due to inactivity. Please log in again."))
-            except Exception:
+            except Exception as exc:
                 try:
                     self._call_in_main(messagebox.showinfo, "Session", "Session timed out due to inactivity. Please log in again.")
-                except Exception:
-                    pass
+                except Exception as nested_exc:
+                    logger.exception("Failed to notify user of auto-logout: %s", nested_exc)
 
             # Restore UI to logged-out state (enable login button)
             try:
@@ -655,14 +841,14 @@ class BlackholeGUI:
             messagebox.showerror("Error", "AuthManager not available")
             return
         self.login_button.config(state=tk.DISABLED)
-        self.status_var.set("Connecting...")
+        self._post_status("Connecting...", scope="LOGIN")
 
         def do_login():
             try:
                 creds = self._prompt_for_credentials()
                 if not creds:
                     self.message_queue.put(("log", "Login cancelled"))
-                    self.message_queue.put(("status", "Not connected"))
+                    self._post_status("Not connected", scope="LOGIN")
                     self._append_session_log("[FAIL] Task=Login reason=cancelled")
                     return
                 auth_mgr = AuthManager(base_url="https://blackhole.ip.qwest.net/")
@@ -680,7 +866,7 @@ class BlackholeGUI:
                     # HTTP Basic for BatchRemoval / RetrievalEngine / CreateBlackhole
                     os.environ["BH_HTTP_USER"] = creds["username"]
                     os.environ["BH_HTTP_PASS"] = creds["password"]
-                    self.message_queue.put(("status", "Connected"))
+                    self._post_status("Connected", scope="LOGIN")
                     self.message_queue.put(("log", f"Login successful: {self.logged_in_user}"))
                     self._append_session_log("[OK] Task=Login")
                     # Record activity and start inactivity watcher
@@ -694,12 +880,12 @@ class BlackholeGUI:
                     details = getattr(auth_mgr, "last_login_status_details", "No details")
                     self.message_queue.put(("error", "Login failed."))
                     self.message_queue.put(("log", f"Login result: {details[:400]}"))
-                    self.message_queue.put(("status", "Not connected"))
+                    self._post_status("Not connected", scope="LOGIN")
                     self._append_session_log(f"[FAIL] Task=Login details={details[:200]}")
             except Exception as e:
                 self.logged_in = False
                 self.message_queue.put(("error", f"Login error: {e}"))
-                self.message_queue.put(("status", "Not connected"))
+                self._post_status("Not connected", scope="LOGIN")
                 self._append_session_log(f"[FAIL] Task=Login error={e}")
             finally:
                 try:
@@ -760,6 +946,12 @@ class BlackholeGUI:
         self.search_value_entry.grid_remove()
         if use_text:
             self.search_value_entry.grid(column=3, row=2, sticky="ew", padx=6)
+        # Show ticket system dropdown only for Ticket # search
+        self.retrieve_ticket_sys_label.grid_remove()
+        self.retrieve_ticket_sys.grid_remove()
+        if sel == "Ticket #":
+            self.retrieve_ticket_sys_label.grid(column=4, row=2, sticky=tk.E, padx=6)
+            self.retrieve_ticket_sys.grid(column=5, row=2, sticky="ew", padx=6)
         # Month/Year for Open Date
         self._show_open_date_controls(sel == "Open Date")
         # Nothing extra for IP Address or Active Blackholes
@@ -784,13 +976,7 @@ class BlackholeGUI:
         ip_tokens = parse_ip_text(self.ip_text.get("1.0", tk.END), auto_add_cidr=False)
 
         # Update global status + disable button
-        try:
-            self.message_queue.put(("status", "Retrieving…"))
-        except Exception:
-            try:
-                self._call_in_main(self.status_var.set, "Retrieving…")
-            except Exception:
-                pass
+        self._post_status("Retrieving…", scope="RETRIEVE")
         self.retrieve_button.config(state=tk.DISABLED)
         
         # Enable abort button
@@ -801,6 +987,7 @@ class BlackholeGUI:
             logger.exception("Failed to enable abort button: %s", e)
 
         def do_retrieve():
+            progress_shown = False
             try:
                 storage_state = self.auth_manager.get_storage_state() if self.auth_manager else None
                 if not storage_state:
@@ -809,12 +996,12 @@ class BlackholeGUI:
                 aggregated: List[dict] = []
 
                 if sel == "IP Address":
-                    # Multi-IP (and CIDR-aware) bidirectional retrieval using global IPs
+                    # Multi-IP concurrent retrieval using global IPs
                     ips_to_query = ip_tokens[:]
                     if not ips_to_query:
                         raise Exception("Paste IPs above to retrieve by IP Address.")
                     
-                    # Bidirectional concurrent retrieval
+                    # Concurrent retrieval with deduplication by ID
                     from concurrent.futures import ThreadPoolExecutor, as_completed
                     
                     total = len(ips_to_query)
@@ -823,13 +1010,14 @@ class BlackholeGUI:
                     # Track progress
                     with self.progress_lock:
                         self.task_progress['RETRIEVE'] = {'total': total, 'processed': 0, 'aborted': False}
-                    
-                    # Split IPs: first half processes top-down, second half bottom-up
-                    mid = (total + 1) // 2
-                    top_half = ips_to_query[:mid]
-                    bottom_half = ips_to_query[mid:]
-                    bottom_half_reversed = list(reversed(bottom_half))
-                    all_ips = top_half + bottom_half_reversed
+
+                    # Show progress bar on main thread
+                    try:
+                        self._call_in_main(self.retrieve_progress.grid)
+                        self._call_in_main(self.retrieve_progress.config, maximum=total, value=0)
+                        progress_shown = True
+                    except Exception as exc:
+                        logger.debug("Failed to show retrieve progress: %s", exc)
                     
                     def fetch_ip(ip: str) -> tuple[str, List[dict]]:
                         """Fetch results for one IP using independent engine."""
@@ -850,9 +1038,10 @@ class BlackholeGUI:
                             return ip, []
                     
                     workers = min(16, max(1, (os.cpu_count() or 2) * 2))
+                    seen_ids = set()  # Track unique blackhole IDs to prevent duplicates
                     
                     with ThreadPoolExecutor(max_workers=workers) as exc:
-                        futures = {exc.submit(fetch_ip, ip): ip for ip in all_ips}
+                        futures = {exc.submit(fetch_ip, ip): ip for ip in ips_to_query}
                         header_added = False
                         
                         for fut in as_completed(futures):
@@ -862,10 +1051,14 @@ class BlackholeGUI:
                             
                             # Update global status with progress
                             status_msg = f"Retrieving… ({processed}/{total})"
-                            try:
-                                self.message_queue.put(("status", status_msg))
-                            except Exception:
-                                self._call_in_main(self.status_var.set, status_msg)
+                            self._post_status(status_msg, scope="RETRIEVE")
+
+                            # Update progress bar value
+                            if progress_shown:
+                                try:
+                                    self._call_in_main(self.retrieve_progress.config, value=processed)
+                                except Exception as exc:
+                                    logger.debug("Failed to update retrieve progress: %s", exc)
                             
                             if self.abort_event.is_set():
                                 with self.progress_lock:
@@ -873,22 +1066,40 @@ class BlackholeGUI:
                                 abort_msg = f"RETRIEVE aborted: {processed - 1}/{total} IPs processed"
                                 self._append_session_log(f"[ABORT] {abort_msg}")
                                 self.message_queue.put(("warning", abort_msg))
+                                self._post_status("Ready", scope="RETRIEVE")
                                 break
                             
                             try:
                                 ip, res = fut.result()
                                 if res:
-                                    if header_added and (isinstance(res[0], dict) and res[0].get("header")):
-                                        aggregated.extend(res[1:])  # skip header
-                                    else:
-                                        aggregated.extend(res)
-                                        if isinstance(res[0], dict) and res[0].get("header"):
+                                    # Handle header row
+                                    start_idx = 0
+                                    if isinstance(res[0], dict) and res[0].get("header"):
+                                        if not header_added:
+                                            aggregated.append(res[0])  # Add header once
                                             header_added = True
+                                        start_idx = 1
+                                    
+                                    # Deduplicate by ID: extract ID from each row
+                                    for row in res[start_idx:]:
+                                        if isinstance(row, dict) and row.get("cells"):
+                                            cells = row["cells"]
+                                            # ID is typically the first cell
+                                            row_id = str(cells[0]).strip() if cells else ""
+                                            if row_id and row_id not in seen_ids:
+                                                seen_ids.add(row_id)
+                                                aggregated.append(row)
+                                        elif isinstance(row, list) and row:
+                                            row_id = str(row[0]).strip()
+                                            if row_id and row_id not in seen_ids:
+                                                seen_ids.add(row_id)
+                                                aggregated.append(row)
                             except Exception as e:
                                 logger.exception("Error processing IP result: %s", e)
                 elif sel == "Ticket #":
                     engine = retrieval_module.RetrievalEngine(storage_state=storage_state, verify_ssl=False, config=self.pw_config)
-                    aggregated = engine.retrieve({"ticket_number_value": explicit, "ticket_system": "NTM-Remedy"})
+                    ticket_sys = self.retrieve_ticket_sys_var.get().strip() if hasattr(self, "retrieve_ticket_sys_var") else "NTM-Remedy"
+                    aggregated = engine.retrieve({"ticket_number_value": explicit, "ticket_system": ticket_sys or "NTM-Remedy"})
                 elif sel == "Opened by":
                     engine = retrieval_module.RetrievalEngine(storage_state=storage_state, verify_ssl=False, config=self.pw_config)
                     aggregated = engine.retrieve({"opened_by_value": explicit or self.logged_in_user or ""})
@@ -909,7 +1120,7 @@ class BlackholeGUI:
                 self._append_session_log(f"[FAIL] Task=Retrieve error={e}")
             finally:
                 try:
-                    self.message_queue.put(("status", "Ready"))
+                    self._post_status("Ready", scope="RETRIEVE")
                     self._call_in_main(self.retrieve_button.config, state=tk.NORMAL)
                     self._call_in_main(self.abort_button.config, state=tk.DISABLED)
                 except Exception:
@@ -918,6 +1129,12 @@ class BlackholeGUI:
                     self.abort_event.clear()
                 except Exception:
                     pass
+                finally:
+                    # Always hide progress bar when operation completes
+                    try:
+                        self._call_in_main(self.retrieve_progress.grid_remove)
+                    except Exception as exc:
+                        logger.debug("Failed to hide retrieve progress: %s", exc)
 
         self._run_in_thread(do_retrieve)
 
@@ -943,15 +1160,7 @@ class BlackholeGUI:
     def _set_create_status(self, text: str) -> None:
         """Thread-safe status label update for Create tab."""
         try:
-            # Use global bottom status bar for all status updates so Log/Status shows progress
-            try:
-                self.message_queue.put(("status", text))
-            except Exception:
-                # Fallback to main-thread call if queueing fails
-                if threading.current_thread() is threading.main_thread():
-                    self.status_var.set(text)
-                else:
-                    self._call_in_main(self.status_var.set, text)
+            self._post_status(text, scope="CREATE")
         except Exception:
             logger.exception("Failed to update create status")
 
@@ -1020,6 +1229,7 @@ class BlackholeGUI:
                 self._call_in_main(self.run_button.config, state=tk.NORMAL)
                 return
         def run_create():
+            progress_shown = False
             try:
                 # Inform shutdown routine how long to wait: IPs * 2s
                 try:
@@ -1029,46 +1239,146 @@ class BlackholeGUI:
                 storage_state = self.auth_manager.get_storage_state() if self.auth_manager else None
                 if not storage_state:
                     raise Exception("No authenticated session available.")
-                creator = BlackholeCreator(storage_state=storage_state, config=self.pw_config)
 
                 results: List[Dict[str, Any]] = []
+                successes: List[str] = []
+                failures: List[str] = []
+                results_lock = threading.Lock()
+                progress_update_counter = 0
                 total = len(ips)
                 # Track progress for this task
                 with self.progress_lock:
-                    self.task_progress['CREATE'] = {'total': total, 'processed': 0, 'aborted': False}
+                    self.task_progress['CREATE'] = {
+                        'total': total,
+                        'processed': 0,
+                        'aborted': False,
+                        'successes': 0,
+                        'failures': 0,
+                    }
 
-                for idx, ip in enumerate(ips, start=1):
-                    # Per-IP start
+                try:
+                    self._call_in_main(self.create_progress.grid)
+                    self._call_in_main(self.create_progress.config, maximum=total, value=0)
+                    progress_shown = True
+                except Exception as exc:
+                    logger.debug("Failed to show create progress bar: %s", exc)
+
+                # Concurrent execution with ThreadPoolExecutor
+                def create_single_ip(ip: str, idx: int) -> Dict[str, Any]:
+                    """Create blackhole for one IP using independent creator instance."""
                     if self.abort_event.is_set():
-                        with self.progress_lock:
-                            self.task_progress['CREATE']['aborted'] = True
-                            self.task_progress['CREATE']['processed'] = idx - 1
-                        abort_msg = f"CREATE aborted: {idx - 1}/{total} IPs processed → stopped at {ip}"
-                        self._append_session_log(f"[ABORT] {abort_msg}")
-                        self.message_queue.put(("warning", abort_msg))
-                        break
-                    self._set_create_status(f"Creating… ({idx}/{total}: {ip})")
-                    self.message_queue.put(("log", f"[Create] {idx}/{total} Starting → {ip}"))
-                    self._append_session_log(f"[Create] {idx}/{total} Starting → {ip}")
-
-                    # Submit one IP (keeping CreateBlackhole’s HTTP session)
-                    per_results = creator.submit_blackholes_http(
-                        [ip], ticket_number, autoclose_time, description, ticket_system
-                    )
-                    # Append and log per-IP result
-                    for r in per_results:
-                        results.append(r)
-                        with self.progress_lock:
-                            self.task_progress['CREATE']['processed'] = idx
-                        self._append_session_log(
-                            f"Result → ip={r.get('ip')} \n success={r.get('success')} \n status={r.get('status')} \n "
-                            f"message={r.get('message')} \n response_time={r.get('response_time')}s"
+                        self._log_diag(f"CREATE skip idx={idx} ip={ip} reason=abort")
+                        return {"ip": ip, "success": False, "status": "aborted", "idx": idx}
+                    try:
+                        self._log_diag(f"CREATE worker start idx={idx} ip={ip}")
+                        creator = BlackholeCreator(storage_state=storage_state, config=self.pw_config)
+                        per_results = creator.submit_blackholes_http(
+                            [ip], ticket_number, autoclose_time, description, ticket_system
                         )
-                        self.message_queue.put(("log", f"[Create] {idx}/{total} Finished (status={r.get('status')}, success={r.get('success')}) → {ip}"))
+                        result = per_results[0] if per_results else {"ip": ip, "success": False, "status": "no_result"}
+                        result["idx"] = idx
+                        self._log_diag(
+                            f"CREATE worker done idx={idx} ip={ip} success={result.get('success')} status={result.get('status')}"
+                        )
+                        return result
+                    except Exception as e:
+                        logger.exception("Error creating blackhole for IP %s: %s", ip, e)
+                        self._log_diag(f"CREATE worker error idx={idx} ip={ip} error={e}")
+                        return {"ip": ip, "success": False, "status": "error", "message": str(e), "idx": idx}
 
-                successes = sum(1 for r in results if r.get("success"))
-                self.log(f"Create (HTTP) complete. Total={total} Successes={successes} Failures={total - successes}")
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                workers = min(16, max(1, (os.cpu_count() or 2) * 2))
+                self._log_diag(f"CREATE executor start total={total} workers={workers}")
+                
+                with ThreadPoolExecutor(max_workers=workers) as executor:
+                    futures = {}
+                    for idx, ip in enumerate(ips, start=1):
+                        self._log_diag(f"CREATE dispatch idx={idx} ip={ip}")
+                        futures[executor.submit(create_single_ip, ip, idx)] = (ip, idx)
+                    aborted = False
 
+                    for fut in as_completed(futures):
+                        ip, idx = futures[fut]
+
+                        if self.abort_event.is_set():
+                            aborted = True
+                            with self.progress_lock:
+                                self.task_progress['CREATE']['aborted'] = True
+                                self.task_progress['CREATE']['processed'] = len(results)
+                            self._log_diag(f"CREATE abort signaled processed={len(results)} total={total}")
+                            abort_msg = f"CREATE aborted: {len(results)}/{total} IPs processed"
+                            self._append_session_log(f"[ABORT] {abort_msg}")
+                            self.message_queue.put(("warning", abort_msg))
+                            break
+
+                        try:
+                            result = fut.result()
+                        except Exception as exc:
+                            logger.exception("Error processing create result for %s: %s", ip, exc)
+                            result = {"ip": ip, "success": False, "status": "error", "message": str(exc), "idx": idx}
+
+                        result.setdefault("ip", ip)
+                        result.setdefault("ticket_number", ticket_number)
+                        result.setdefault("autoclose_time", autoclose_time)
+                        result.setdefault("description", description)
+
+                        with results_lock:
+                            results.append(result)
+                            processed = len(results)
+
+                        if result.get("success"):
+                            successes.append(ip)
+                        else:
+                            failures.append(ip)
+                        with self.progress_lock:
+                            self.task_progress['CREATE']['processed'] = processed
+                            self.task_progress['CREATE']['successes'] = len(successes)
+                            self.task_progress['CREATE']['failures'] = len(failures)
+
+                        progress_update_counter += 1
+                        if progress_update_counter % 5 == 0 or processed == total:
+                            self._set_create_status(f"Creating… ({processed}/{total})")
+                            if progress_shown:
+                                try:
+                                    self._call_in_main(self.create_progress.config, value=processed)
+                                except Exception as exc:
+                                    logger.debug("Failed to update create progress bar: %s", exc)
+
+                        summary = (
+                            f"[Create] {processed}/{total} Completed → {ip} (success={result.get('success')}, status={result.get('status')})"
+                        )
+                        self.message_queue.put(("log", summary))
+                        self._log_diag(
+                            f"CREATE result idx={idx} ip={ip} success={result.get('success')} status={result.get('status')} remaining={total - processed}"
+                        )
+                        self._append_session_log(
+                            f"Result → ip={result.get('ip')} \n success={result.get('success')} \n status={result.get('status')} \n "
+                            f"message={result.get('message', 'N/A')} \n response_time={result.get('response_time', 'N/A')}s"
+                        )
+
+                    if aborted:
+                        for fut in futures:
+                            fut.cancel()
+
+                success_count = len(successes)
+                failure_count = len(failures)
+                processed_total = len(results)
+                with self.progress_lock:
+                    if 'CREATE' in self.task_progress:
+                        self.task_progress['CREATE']['processed'] = processed_total
+                        self.task_progress['CREATE']['successes'] = success_count
+                        self.task_progress['CREATE']['failures'] = failure_count
+                self.log(
+                    f"Create (HTTP) complete. Requested={total} Processed={processed_total} Successes={success_count} Failures={failure_count}"
+                )
+                self._log_diag(
+                    f"CREATE summary processed={processed_total}/{total} success={success_count} failure={failure_count}"
+                )
+                if failures:
+                    self.log(f"Failed IPs: {', '.join(failures[:10])}{'...' if len(failures) > 10 else ''}")
+
+                results.sort(key=lambda r: r.get("idx", 0))
+                
                 # Show compact grid summary
                 rows = [
                     {
@@ -1097,7 +1407,7 @@ class BlackholeGUI:
                     self._append_session_log(f"[FAIL] Task=CreateHTTP.Verify error={ve}")
                     self.log(f"Verification error: {ve}")
 
-                self._append_session_log(f"[OK] Task=CreateHTTP successes={successes}/{total}")
+                self._append_session_log(f"[OK] Task=CreateHTTP successes={success_count}/{total}")
             except Exception as e:
                 self.message_queue.put(("error", str(e)))
                 self._append_session_log(f"[FAIL] Task=CreateHTTP error={e}")
@@ -1116,6 +1426,11 @@ class BlackholeGUI:
                         self.abort_event.clear()
                     except Exception:
                         pass
+                    if progress_shown:
+                        try:
+                            self._call_in_main(self.create_progress.grid_remove)
+                        except Exception as exc:
+                            logger.debug("Failed to hide create progress bar: %s", exc)
                 except Exception:
                     logger.exception("Failed to restore create UI state")
 
@@ -1194,6 +1509,114 @@ class BlackholeGUI:
             messagebox.showinfo("Batch Update", "Select one or more rows.")
             return
         self.batch_ids_var.set(",".join(ids))
+        # Switch to UPDATE tab
+        self.notebook.select(2)
+        messagebox.showinfo("IDs Loaded", f"{len(ids)} ID(s) loaded into UPDATE tab.")
+
+    def _execute_batch_operations(
+        self,
+        engine: BatchRemoval,
+        operations: List[Tuple[str, Dict[str, str]]],
+        *,
+        action_label: str,
+        status_prefix: str,
+    ) -> Dict[str, int]:
+        """Run batch update operations with shared concurrency, logging, and progress."""
+        summary = {"success": 0, "failure": 0, "aborted": 0, "processed": 0, "total": 0}
+        if not operations:
+            return summary
+
+        total = len(operations)
+        summary["total"] = total
+        workers = min(16, max(1, (os.cpu_count() or 2) * 2))
+        progress_shown = False
+        status_prefix = status_prefix.strip() or action_label
+
+        with self.progress_lock:
+            self.task_progress['UPDATE'] = {
+                'total': total,
+                'processed': 0,
+                'aborted': False,
+                'successes': 0,
+                'failures': 0,
+            }
+
+        initial_status = f"{status_prefix} (0/{total})"
+        self._post_status(initial_status, scope="UPDATE")
+
+        try:
+            self._call_in_main(self.update_progress.grid)
+            self._call_in_main(self.update_progress.config, maximum=total, value=0)
+            progress_shown = True
+        except Exception as exc:
+            logger.debug("Failed to show update progress bar: %s", exc)
+
+        def progress_cb(processed: int, total_ops: int) -> None:
+            with self.progress_lock:
+                self.task_progress['UPDATE']['processed'] = processed
+            status_msg = f"{status_prefix} ({processed}/{total_ops})"
+            self._post_status(status_msg, scope="UPDATE")
+            if progress_shown:
+                try:
+                    self._call_in_main(self.update_progress.config, maximum=total_ops, value=processed)
+                except Exception as cb_exc:
+                    logger.debug("Failed to update batch progress bar: %s", cb_exc)
+
+        results: List[Dict[str, Any]] = []
+
+        try:
+            self._log_diag(f"UPDATE executor start total={total} workers={workers}")
+            results = engine.batch_post_views(
+                operations,
+                max_workers=workers,
+                abort_event=self.abort_event,
+                progress_callback=progress_cb,
+                diagnostics_callback=self._log_diag,
+            )
+        except Exception:
+            raise
+        finally:
+            if progress_shown:
+                try:
+                    self._call_in_main(self.update_progress.grid_remove)
+                except Exception as exc:
+                    logger.debug("Failed to hide update progress bar: %s", exc)
+
+        processed = len(results)
+        aborted_entries = [r for r in results if str(r.get("text", "")).lower() == "aborted"]
+        success_count = sum(1 for r in results if r.get("success"))
+        aborted_count = len(aborted_entries)
+        failure_count = processed - success_count - aborted_count
+        if failure_count < 0:
+            failure_count = 0
+
+        with self.progress_lock:
+            self.task_progress['UPDATE']['processed'] = processed
+            if aborted_count or self.abort_event.is_set():
+                self.task_progress['UPDATE']['aborted'] = True
+            self.task_progress['UPDATE']['successes'] = success_count
+            self.task_progress['UPDATE']['failures'] = failure_count
+
+        for res in results:
+            log_line = f"{action_label} id={res.get('id')} status={res.get('status')} success={res.get('success')}"
+            self.message_queue.put(("log", log_line))
+            self._append_session_log(log_line)
+            self._log_diag(
+                f"UPDATE result id={res.get('id')} success={res.get('success')} status={res.get('status')} text={res.get('text')}"
+            )
+
+        summary.update(
+            {
+                "success": success_count,
+                "failure": failure_count,
+                "aborted": aborted_count,
+                "processed": processed,
+            }
+        )
+        self._log_diag(
+            f"UPDATE summary processed={processed}/{total} success={success_count} failure={failure_count} aborted={aborted_count}"
+        )
+        return summary
 
     def on_batch_set_description(self) -> None:
         # Record user activity for inactivity timeout
@@ -1208,38 +1631,49 @@ class BlackholeGUI:
             messagebox.showerror("Batch Update", "Provide BH ID(s) and Description.")
             return
         self._append_session_log("[START] Task=Batch.SetDescription ids=" + ",".join(ids))
+
         def worker():
             try:
-                # Build operations
-                total = len(ids)
                 ops = [(bh, {"id": bh, "action": "description", "description": desc, "Set": "Set"}) for bh in ids]
-                workers = min(8, max(1, (os.cpu_count() or 2)))
-                # Track progress
-                with self.progress_lock:
-                    self.task_progress['UPDATE'] = {'total': total, 'processed': 0, 'aborted': False}
-                results = eng.batch_post_views(ops, max_workers=workers, abort_event=self.abort_event)
-                succ = sum(1 for r in results if r.get("success"))
-                fail = len(results) - succ
-                aborted = [r for r in results if str(r.get("text", "")).lower().find("abort") != -1 or r.get("text") == "aborted"]
-                with self.progress_lock:
-                    if aborted:
-                        self.task_progress['UPDATE']['aborted'] = True
-                    self.task_progress['UPDATE']['processed'] = len(results)
-                for r in results:
-                    self.log(f"SetDescription id={r.get('id')} status={r.get('status')} success={r.get('success')}")
-                    self._append_session_log(f"SetDescription id={r.get('id')} status={r.get('status')} success={r.get('success')}")
+                summary = self._execute_batch_operations(
+                    eng,
+                    ops,
+                    action_label="SetDescription",
+                    status_prefix="Updating descriptions…",
+                )
+
+                total = summary["total"]
+                processed = summary["processed"]
+                aborted = summary["aborted"]
+                successes = summary["success"]
+                failures = summary["failure"]
+
+                if total == 0:
+                    self.message_queue.put(("info", "No IDs supplied for description update."))
+                    self._append_session_log("[OK] Task=Batch.SetDescription successes=0 failures=0")
+                    return
+
                 if aborted:
-                    abort_msg = f"UPDATE aborted: {len(results)-len(aborted)}/{total} IDs processed"
+                    processed_without_aborted = max(0, processed - aborted)
+                    abort_msg = f"UPDATE aborted: {processed_without_aborted}/{total} IDs processed"
                     self._append_session_log(f"[ABORT] {abort_msg}")
                     self.message_queue.put(("warning", abort_msg))
                 else:
-                    self._append_session_log(f"[OK] Task=Batch.SetDescription successes={succ} failures={fail}")
-                    self.message_queue.put(("log", f"Batch description complete: {succ} success, {fail} failed"))
+                    self._append_session_log(
+                        f"[OK] Task=Batch.SetDescription successes={successes} failures={failures}"
+                    )
+                    self.message_queue.put(
+                        ("log", f"Batch description complete: {successes} success, {failures} failed")
+                    )
             except Exception as e:
                 self._append_session_log(f"[FAIL] Task=Batch.SetDescription error={e}")
                 self.message_queue.put(("error", str(e)))
-
             finally:
+                try:
+                    if eng and hasattr(eng, "close"):
+                        eng.close()
+                except Exception:
+                    logger.debug("Failed to close batch engine", exc_info=True)
                 try:
                     self._shutdown_wait_override = None
                 except Exception:
@@ -1249,6 +1683,7 @@ class BlackholeGUI:
                     self.abort_event.clear()
                 except Exception:
                     pass
+                self._post_status("Ready", scope="UPDATE")
 
         # Prepare abort flag and enable Abort button
         try:
@@ -1277,37 +1712,60 @@ class BlackholeGUI:
             messagebox.showerror("Batch Update", "Provide BH ID(s).")
             return
         self._append_session_log("[START] Task=Batch.SetAutoclose ids=" + ",".join(ids))
+
         def worker():
             try:
-                total = len(ids)
-                ops = [(bh, {"id": bh, "action": "autoclose", "close_text": close_text, "Set auto-close time": "Set auto-close time"}) for bh in ids]
-                workers = min(8, max(1, (os.cpu_count() or 2)))
-                # Track progress
-                with self.progress_lock:
-                    self.task_progress['UPDATE'] = {'total': total, 'processed': 0, 'aborted': False}
-                results = eng.batch_post_views(ops, max_workers=workers, abort_event=self.abort_event)
-                succ = sum(1 for r in results if r.get("success"))
-                fail = len(results) - succ
-                aborted = [r for r in results if str(r.get("text", "")).lower().find("abort") != -1 or r.get("text") == "aborted"]
-                with self.progress_lock:
-                    if aborted:
-                        self.task_progress['UPDATE']['aborted'] = True
-                    self.task_progress['UPDATE']['processed'] = len(results)
-                for r in results:
-                    self.log(f"SetAutoclose id={r.get('id')} status={r.get('status')} success={r.get('success')}")
-                    self._append_session_log(f"SetAutoclose id={r.get('id')} status={r.get('status')} success={r.get('success')}")
+                ops = [
+                    (
+                        bh,
+                        {
+                            "id": bh,
+                            "action": "autoclose",
+                            "close_text": close_text,
+                            "Set auto-close time": "Set auto-close time",
+                        },
+                    )
+                    for bh in ids
+                ]
+                summary = self._execute_batch_operations(
+                    eng,
+                    ops,
+                    action_label="SetAutoclose",
+                    status_prefix="Updating auto-close…",
+                )
+
+                total = summary["total"]
+                processed = summary["processed"]
+                aborted = summary["aborted"]
+                successes = summary["success"]
+                failures = summary["failure"]
+
+                if total == 0:
+                    self.message_queue.put(("info", "No IDs supplied for auto-close update."))
+                    self._append_session_log("[OK] Task=Batch.SetAutoclose successes=0 failures=0")
+                    return
+
                 if aborted:
-                    abort_msg = f"UPDATE aborted: {len(results)-len(aborted)}/{total} IDs processed"
+                    processed_without_aborted = max(0, processed - aborted)
+                    abort_msg = f"UPDATE aborted: {processed_without_aborted}/{total} IDs processed"
                     self._append_session_log(f"[ABORT] {abort_msg}")
                     self.message_queue.put(("warning", abort_msg))
                 else:
-                    self._append_session_log(f"[OK] Task=Batch.SetAutoclose successes={succ} failures={fail}")
-                    self.message_queue.put(("log", f"Batch autoclose complete: {succ} success, {fail} failed"))
+                    self._append_session_log(
+                        f"[OK] Task=Batch.SetAutoclose successes={successes} failures={failures}"
+                    )
+                    self.message_queue.put(
+                        ("log", f"Batch autoclose complete: {successes} success, {failures} failed")
+                    )
             except Exception as e:
                 self._append_session_log(f"[FAIL] Task=Batch.SetAutoclose error={e}")
                 self.message_queue.put(("error", str(e)))
-
             finally:
+                try:
+                    if eng and hasattr(eng, "close"):
+                        eng.close()
+                except Exception:
+                    logger.debug("Failed to close batch engine", exc_info=True)
                 try:
                     self._shutdown_wait_override = None
                 except Exception:
@@ -1317,6 +1775,7 @@ class BlackholeGUI:
                     self.abort_event.clear()
                 except Exception:
                     pass
+                self._post_status("Ready", scope="UPDATE")
 
         try:
             self.abort_event.clear()
@@ -1343,37 +1802,61 @@ class BlackholeGUI:
             messagebox.showerror("Batch Update", "Provide BH ID(s), Ticket system, and number.")
             return
         self._append_session_log("[START] Task=Batch.AssociateTicket ids=" + ",".join(ids))
+
         def worker():
             try:
-                total = len(ids)
-                ops = [(bh, {"id": bh, "action": "ticket", "ticket_system": sys, "ticket_number": num, "Associate with ticket": "Associate with ticket"}) for bh in ids]
-                workers = min(8, max(1, (os.cpu_count() or 2)))
-                # Track progress
-                with self.progress_lock:
-                    self.task_progress['UPDATE'] = {'total': total, 'processed': 0, 'aborted': False}
-                results = eng.batch_post_views(ops, max_workers=workers, abort_event=self.abort_event)
-                succ = sum(1 for r in results if r.get("success"))
-                fail = len(results) - succ
-                aborted = [r for r in results if str(r.get("text", "")).lower().find("abort") != -1 or r.get("text") == "aborted"]
-                with self.progress_lock:
-                    if aborted:
-                        self.task_progress['UPDATE']['aborted'] = True
-                    self.task_progress['UPDATE']['processed'] = len(results)
-                for r in results:
-                    self.log(f"AssociateTicket id={r.get('id')} status={r.get('status')} success={r.get('success')}")
-                    self._append_session_log(f"AssociateTicket id={r.get('id')} status={r.get('status')} success={r.get('success')}")
+                ops = [
+                    (
+                        bh,
+                        {
+                            "id": bh,
+                            "action": "ticket",
+                            "ticket_system": sys,
+                            "ticket_number": num,
+                            "Associate with ticket": "Associate with ticket",
+                        },
+                    )
+                    for bh in ids
+                ]
+                summary = self._execute_batch_operations(
+                    eng,
+                    ops,
+                    action_label="AssociateTicket",
+                    status_prefix="Updating tickets…",
+                )
+
+                total = summary["total"]
+                processed = summary["processed"]
+                aborted = summary["aborted"]
+                successes = summary["success"]
+                failures = summary["failure"]
+
+                if total == 0:
+                    self.message_queue.put(("info", "No IDs supplied for ticket association."))
+                    self._append_session_log("[OK] Task=Batch.AssociateTicket successes=0 failures=0")
+                    return
+
                 if aborted:
-                    abort_msg = f"UPDATE aborted: {len(results)-len(aborted)}/{total} IDs processed"
+                    processed_without_aborted = max(0, processed - aborted)
+                    abort_msg = f"UPDATE aborted: {processed_without_aborted}/{total} IDs processed"
                     self._append_session_log(f"[ABORT] {abort_msg}")
                     self.message_queue.put(("warning", abort_msg))
                 else:
-                    self._append_session_log(f"[OK] Task=Batch.AssociateTicket successes={succ} failures={fail}")
-                    self.message_queue.put(("log", f"Batch ticket association complete: {succ} success, {fail} failed"))
+                    self._append_session_log(
+                        f"[OK] Task=Batch.AssociateTicket successes={successes} failures={failures}"
+                    )
+                    self.message_queue.put(
+                        ("log", f"Batch ticket association complete: {successes} success, {failures} failed")
+                    )
             except Exception as e:
                 self._append_session_log(f"[FAIL] Task=Batch.AssociateTicket error={e}")
                 self.message_queue.put(("error", str(e)))
-
             finally:
+                try:
+                    if eng and hasattr(eng, "close"):
+                        eng.close()
+                except Exception:
+                    logger.debug("Failed to close batch engine", exc_info=True)
                 try:
                     self._shutdown_wait_override = None
                 except Exception:
@@ -1383,6 +1866,7 @@ class BlackholeGUI:
                     self.abort_event.clear()
                 except Exception:
                     pass
+                self._post_status("Ready", scope="UPDATE")
 
         try:
             self.abort_event.clear()
@@ -1410,37 +1894,49 @@ class BlackholeGUI:
             self._append_session_log("[FAIL] Task=Batch.CloseNow reason=user_cancel")
             return
         self._append_session_log("[START] Task=Batch.CloseNow ids=" + ",".join(ids))
+
         def worker():
             try:
-                total = len(ids)
                 ops = [(bh, {"id": bh, "action": "close", "Close Now": "Close Now"}) for bh in ids]
-                workers = min(8, max(1, (os.cpu_count() or 2)))
-                # Track progress
-                with self.progress_lock:
-                    self.task_progress['UPDATE'] = {'total': total, 'processed': 0, 'aborted': False}
-                results = eng.batch_post_views(ops, max_workers=workers, abort_event=self.abort_event)
-                succ = sum(1 for r in results if r.get("success"))
-                fail = len(results) - succ
-                aborted = [r for r in results if str(r.get("text", "")).lower().find("abort") != -1 or r.get("text") == "aborted"]
-                with self.progress_lock:
-                    if aborted:
-                        self.task_progress['UPDATE']['aborted'] = True
-                    self.task_progress['UPDATE']['processed'] = len(results)
-                for r in results:
-                    self.log(f"CloseNow id={r.get('id')} status={r.get('status')} success={r.get('success')}")
-                    self._append_session_log(f"CloseNow id={r.get('id')} status={r.get('status')} success={r.get('success')}")
+                summary = self._execute_batch_operations(
+                    eng,
+                    ops,
+                    action_label="CloseNow",
+                    status_prefix="Closing blackholes…",
+                )
+
+                total = summary["total"]
+                processed = summary["processed"]
+                aborted = summary["aborted"]
+                successes = summary["success"]
+                failures = summary["failure"]
+
+                if total == 0:
+                    self.message_queue.put(("info", "No IDs supplied for Close Now."))
+                    self._append_session_log("[OK] Task=Batch.CloseNow successes=0 failures=0")
+                    return
+
                 if aborted:
-                    abort_msg = f"UPDATE aborted: {len(results)-len(aborted)}/{total} IDs processed"
+                    processed_without_aborted = max(0, processed - aborted)
+                    abort_msg = f"UPDATE aborted: {processed_without_aborted}/{total} IDs processed"
                     self._append_session_log(f"[ABORT] {abort_msg}")
                     self.message_queue.put(("warning", abort_msg))
                 else:
-                    self._append_session_log(f"[OK] Task=Batch.CloseNow successes={succ} failures={fail}")
-                    self.message_queue.put(("log", f"Batch close complete: {succ} closed, {fail} failed"))
+                    self._append_session_log(
+                        f"[OK] Task=Batch.CloseNow successes={successes} failures={failures}"
+                    )
+                    self.message_queue.put(
+                        ("log", f"Batch close complete: {successes} closed, {failures} failed")
+                    )
             except Exception as e:
                 self._append_session_log(f"[FAIL] Task=Batch.CloseNow error={e}")
                 self.message_queue.put(("error", str(e)))
-
             finally:
+                try:
+                    if eng and hasattr(eng, "close"):
+                        eng.close()
+                except Exception:
+                    logger.debug("Failed to close batch engine", exc_info=True)
                 try:
                     self._shutdown_wait_override = None
                 except Exception:
@@ -1450,6 +1946,7 @@ class BlackholeGUI:
                     self.abort_event.clear()
                 except Exception:
                     pass
+                self._post_status("Ready", scope="UPDATE")
 
         try:
             self.abort_event.clear()
@@ -1504,7 +2001,7 @@ class BlackholeGUI:
                 storage_state = self.auth_manager.get_storage_state() if self.auth_manager else None
                 ids: List[str] = []
 
-                # Use bidirectional concurrent retrieval same as on_retrieve()
+                # Use concurrent retrieval to collect IDs from IPs
                 from concurrent.futures import ThreadPoolExecutor, as_completed
                 
                 total = len(ip_tokens)
@@ -1513,11 +2010,7 @@ class BlackholeGUI:
                 with self.progress_lock:
                     self.task_progress['RETRIEVE'] = {'total': total, 'processed': 0, 'aborted': False}
 
-                # Split IPs: first half processes top-down, second half bottom-up
-                mid = (total + 1) // 2
-                top_half = ip_tokens[:mid]
-                bottom_half = ip_tokens[mid:]
-                bottom_half_reversed = list(reversed(bottom_half))
+                seen_ids = set()  # Track unique IDs to prevent duplicates
 
                 def fetch_for_ip(ip: str) -> tuple[str, List[str]]:
                     """Fetch IDs for one IP using independent engine. Extract from cell results.
@@ -1553,16 +2046,13 @@ class BlackholeGUI:
                         self._append_session_log(f"[ERROR] Failed to fetch ID for {ip}: {e}")
                         return ip, []
 
-                # Use ThreadPoolExecutor with bidirectional processing
-                # Top half: 0→N (normal order), Bottom half: N→0 (reversed order)
+                # Use ThreadPoolExecutor for concurrent processing
                 from concurrent.futures import ThreadPoolExecutor, as_completed
                 
                 workers = min(16, max(1, (os.cpu_count() or 2) * 2))
                 
                 with ThreadPoolExecutor(max_workers=workers) as exc:
-                    # Submit all IPs: top half in order, bottom half reversed
-                    all_ips = top_half + bottom_half_reversed
-                    futures = {exc.submit(fetch_for_ip, ip): ip for ip in all_ips}
+                    futures = {exc.submit(fetch_for_ip, ip): ip for ip in ip_tokens}
                     
                     for fut in as_completed(futures):
                         if self.abort_event.is_set():
@@ -1584,10 +2074,7 @@ class BlackholeGUI:
                                     self.task_progress['RETRIEVE']['processed'] = processed
                                 # Update status bar
                                 status_msg = f"Collecting IDs… ({processed}/{total})"
-                                try:
-                                    self.message_queue.put(("status", status_msg))
-                                except Exception:
-                                    self._call_in_main(self.status_var.set, status_msg)
+                                self._post_status(status_msg, scope="UPDATE")
                                 continue
 
                             processed += 1
@@ -1596,17 +2083,17 @@ class BlackholeGUI:
 
                             # Always log progress (even when zero IDs found) to keep counts clear
                             result_msg = f"[Batch.CollectIDs] {processed}/{total} Found {len(local)} ID(s) → {ip}"
-                            if local:
-                                ids.extend(local)
+                            # Deduplicate IDs
+                            for id_val in local:
+                                if id_val not in seen_ids:
+                                    seen_ids.add(id_val)
+                                    ids.append(id_val)
                             self.message_queue.put(("log", result_msg))
                             self._append_session_log(result_msg)
 
                             # Update status bar
                             status_msg = f"Collecting IDs… ({processed}/{total})"
-                            try:
-                                self.message_queue.put(("status", status_msg))
-                            except Exception:
-                                self._call_in_main(self.status_var.set, status_msg)
+                            self._post_status(status_msg, scope="UPDATE")
 
                         except Exception as e:
                             logger.exception("Error fetching ID for IP: %s", e)
@@ -1632,6 +2119,7 @@ class BlackholeGUI:
                     self.abort_event.clear()
                 except Exception:
                     pass
+                self._post_status("Ready", scope="UPDATE")
         
         # Prepare abort flag and enable Abort button for retrieval
         self.abort_event.clear()
@@ -1885,6 +2373,13 @@ class BlackholeGUI:
     # --------------------------
     def log(self, *lines: str) -> None:
         """Append lines to the log pane and auto-scroll; fixed enable/disable handling."""
+        if threading.current_thread() is not threading.main_thread():
+            for line in lines:
+                try:
+                    self.message_queue.put(("log", line))
+                except Exception as exc:
+                    logger.exception("Failed to enqueue log message: %s", exc)
+            return
         try:
             self.result_text.config(state=tk.NORMAL)
             for line in lines:
@@ -1914,8 +2409,84 @@ class BlackholeGUI:
             except Exception:
                 logger.exception("Failed to enqueue session log error")
 
-    def _run_in_thread(self, worker_func: Callable) -> None:
+    def _log_diag(self, message: str) -> None:
+        if not self.diagnostics_enabled.get():
+            return
+        try:
+            tagged = f"[DIAG] {message}"
+            self._append_session_log(tagged)
+            self.message_queue.put(("log", tagged))
+        except Exception:
+            logger.debug("Failed to emit diagnostics message", exc_info=True)
+
+    def _decorate_status(self, text: str, scope: Optional[str]) -> str:
+        if not self.diagnostics_enabled.get():
+            return text
+        diag_parts: List[str] = []
+        try:
+            with self.threads_lock:
+                active = sum(1 for t in self.active_threads if t.is_alive())
+        except Exception:
+            active = len(self.active_threads)
+        try:
+            q_depth = self.message_queue.qsize()
+        except Exception:
+            q_depth = 0
+        diag_parts.append(f"thr={active}")
+        diag_parts.append(f"queue={q_depth}")
+        if scope and scope in self.task_progress:
+            prog = self.task_progress.get(scope, {})
+            processed = prog.get("processed", 0)
+            total = prog.get("total")
+            if total:
+                diag_parts.append(f"progress={processed}/{total}")
+            successes = prog.get("success") or prog.get("successes")
+            if successes is not None and total:
+                diag_parts.append(f"ok={successes}")
+            failures = prog.get("failure") or prog.get("failures")
+            if failures is not None and failures:
+                diag_parts.append(f"fail={failures}")
+            if prog.get("aborted"):
+                diag_parts.append("aborted")
+        diag_line = " ".join(diag_parts)
+        return f"{text} | diag {diag_line}" if diag_line else text
+
+    def _post_status(self, text: str, scope: Optional[str] = None) -> None:
+        self._last_status_scope = scope
+        self._last_status_text = text
+        payload = (text, scope)
+        try:
+            self.message_queue.put(("status", payload))
+        except Exception:
+            logger.debug("Failed to enqueue status message", exc_info=True)
+            if threading.current_thread() is threading.main_thread():
+                self.status_var.set(self._decorate_status(text, scope))
+            else:
+                self._call_in_main(self._set_status_direct, text, scope)
+
+    def _set_status_direct(self, text: str, scope: Optional[str] = None) -> None:
+        self._last_status_scope = scope
+        self._last_status_text = text
+        try:
+            self.status_var.set(self._decorate_status(text, scope))
+        except Exception:
+            logger.exception("Failed to set status directly")
+
+    def _run_in_thread(self, worker_func: Callable, job_label: Optional[str] = None) -> None:
+        job_id = next(self._job_counter)
+        label = job_label or getattr(worker_func, "__name__", f"job_{job_id}")
+        pre_threads = 0
+        try:
+            with self.threads_lock:
+                pre_threads = sum(1 for t in self.active_threads if t.is_alive())
+        except Exception:
+            pre_threads = len(self.active_threads)
+        self._log_diag(f"Dispatch job#{job_id} label={label} active={pre_threads} queue={self.message_queue.qsize() if hasattr(self.message_queue, 'qsize') else 'n/a'}")
+
         def worker_wrapper():
+            thread_name = threading.current_thread().name
+            start = time.time()
+            self._log_diag(f"Start job#{job_id} label={label} thread={thread_name}")
             try:
                 worker_func()
             except Exception as e:
@@ -1931,6 +2502,9 @@ class BlackholeGUI:
                         self.active_threads.remove(threading.current_thread())
                     except ValueError:
                         pass
+                    active_remaining = sum(1 for t in self.active_threads if t.is_alive())
+                duration = time.time() - start
+                self._log_diag(f"Done job#{job_id} label={label} duration={duration:.2f}s active={active_remaining}")
         
         thread = threading.Thread(target=worker_wrapper, daemon=True)
         with self.threads_lock:
@@ -1943,6 +2517,14 @@ class BlackholeGUI:
         
         # Signal shutdown to all components
         self.shutdown_event.set()
+        
+        # Cancel the queue pump callback
+        if self._check_queue_after_id is not None:
+            try:
+                self.root.after_cancel(self._check_queue_after_id)
+                logger.debug("Cancelled queue pump callback")
+            except tk.TclError:
+                pass
         
         # Stop the queue pump
         self._append_session_log("[START] Task=GracefulShutdown")
@@ -2010,6 +2592,108 @@ class BlackholeGUI:
         logger.info(f"Signal {signum} received, initiating graceful shutdown")
         self._graceful_shutdown()
 
+    def _configure_theme(self) -> None:
+        """Configure modern UI theme with dark mode support and professional styling."""
+        style = ttk.Style()
+        
+        # Configure notebook tab style
+        style.configure('TNotebook.Tab', padding=[20, 12])
+        
+        # Theme is now applied by main_entry.py
+        
+    def _toggle_theme(self) -> None:
+        """Theme toggle is now handled by main_entry.py with the new theme system."""
+        # This method is kept for compatibility but actual theme switching
+        # is handled by the enhanced menu in main_entry.py
+        pass
+        
+    def _create_menu_bar(self) -> None:
+        """Create menu bar with Help menu and theme toggle."""
+        menubar = tk.Menu(self.root)
+        self.root.config(menu=menubar)
+        
+        # Help menu
+        help_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Help", menu=help_menu)
+        help_menu.add_command(label="View User Guide", command=self._show_user_guide)
+        help_menu.add_separator()
+        help_menu.add_command(label="About", command=self._show_about)
+        
+        # View menu
+        view_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="View", menu=view_menu)
+        view_menu.add_checkbutton(label="Dark Mode", variable=self.dark_mode, command=self._toggle_theme)
+        view_menu.add_checkbutton(
+            label="Diagnostics Logging",
+            variable=self.diagnostics_enabled,
+            command=self._on_toggle_diagnostics,
+        )
+    
+    def _show_user_guide(self) -> None:
+        """Display a concise, user-friendly guide in a scrollable window."""
+        guide_window = tk.Toplevel(self.root)
+        guide_window.title("Blackhole Automation - User Guide")
+        guide_window.geometry("900x700")
+        
+        # Create scrolled text widget
+        text_frame = ttk.Frame(guide_window, padding="10")
+        text_frame.pack(fill=tk.BOTH, expand=True)
+        
+        text_widget = scrolledtext.ScrolledText(
+            text_frame,
+            wrap=tk.WORD,
+            width=100,
+            height=40,
+            font=("Consolas", 9)
+        )
+        text_widget.pack(fill=tk.BOTH, expand=True)
+        
+        guide_sections = (
+            "Blackhole Automation: Quick Guide\n\n"
+            "Overview\n"
+            "Launch the desktop app to handle CREATE, RETRIEVE, and UPDATE requests for the Blackhole portal without touching the browser.\n\n"
+            "Getting Started\n"
+            "1. Start the app and sign in when prompted.\n"
+            "2. Paste IP addresses or Blackhole IDs into the input field.\n"
+            "3. Pick the action tab (Create, Retrieve, Update) and click Run.\n"
+            "4. Follow progress in the status bar and results panel.\n\n"
+            "Helpful Tips\n"
+            "- Use Load for Batch to reuse IDs between tabs.\n"
+            "- Toggle Diagnostics Logging from the View menu when you need extra detail.\n"
+            "- Hit Abort to stop after the current request if something looks wrong.\n\n"
+            "Support\n"
+            "Email or page the DDoS Response Team for production issues."
+        )
+
+        text_widget.insert('1.0', guide_sections)
+        text_widget.config(state='disabled')
+    
+    def _show_about(self) -> None:
+        """Show About dialog with version and author info."""
+        about_text = (
+            "Blackhole Automation\n"
+            "Version 2.0\n\n"
+            "Desktop GUI automation for Lumen Blackhole portal\n\n"
+            "Owner: Prajeet Pounraj\n"
+            "Team: DDoS Response Team\n"
+            "Information Security Engineer II\n\n"
+            "© 2026 Lumen Technologies"
+        )
+        messagebox.showinfo("About Blackhole Automation", about_text)
+
+    def _on_toggle_diagnostics(self) -> None:
+        state = self.diagnostics_enabled.get()
+        note = "enabled" if state else "disabled"
+        self._append_session_log(f"[DIAG] diagnostics {note}")
+        try:
+            self.message_queue.put(("log", f"Diagnostics logging {note}"))
+        except Exception:
+            logger.debug("Failed to enqueue diagnostics toggle log", exc_info=True)
+        # Refresh status bar to reflect new decoration rules
+        current = getattr(self, "_last_status_text", "Ready")
+        scope = getattr(self, "_last_status_scope", None)
+        self._set_status_direct(current or "Ready", scope)
+
     def on_abort(self) -> None:
         """User-initiated abort for long-running CREATE or UPDATE operations."""
         if not self.abort_event.is_set():
@@ -2027,10 +2711,10 @@ class BlackholeGUI:
 def main() -> None:
     root = tk.Tk()
     # Make the window resizable and start at a sensible size for deployment
-    # Standard laptop/monitor resolution friendly with good content visibility
-    root.geometry("1100x950")
+    # Compact layout ensures all controls visible at reasonable window sizes
+    root.geometry("1200x900")
     # Set minimum window size to prevent UI elements from being hidden
-    root.minsize(950, 700)
+    root.minsize(1000, 800)
     app = BlackholeGUI(root)
     
     # Register window close protocol handler (handles X button)

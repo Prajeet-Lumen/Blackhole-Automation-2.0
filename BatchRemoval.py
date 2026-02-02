@@ -2,7 +2,7 @@
 """
 **BatchRemoval.py**
 Edited: January 2026
-Created by: Prajeet Pounraj
+Created by: Prajeet (DDoS Response Team)
 
 Batch update engine for blackhole records (description, auto-close time, ticket association, close).
 Provides individual POST operations via view_details_html and set_* methods, plus a high-performance
@@ -12,7 +12,10 @@ across many operations. Accepts optional PlaywrightConfig for credential/state s
 from __future__ import annotations
 import os
 import sys
-from typing import Dict, Any, Optional, List, Tuple
+import logging
+from typing import Dict, Any, Optional, List, Tuple, Callable
+
+logger = logging.getLogger(__name__)
 import concurrent.futures
 import threading
 from PlayWrightUtil import build_request_kwargs, suppress_cleanup_warning, PlaywrightConfig, PlaywrightClient
@@ -133,7 +136,15 @@ class BatchRemoval:
             "Close Now": "Close Now",
         })
 
-    def batch_post_views(self, operations: List[Tuple[str, Dict[str, str]]], max_workers: int = 5, timeout: int = 30000, abort_event: Optional[threading.Event] = None) -> List[Dict[str, Any]]:
+    def batch_post_views(
+        self,
+        operations: List[Tuple[str, Dict[str, str]]],
+        max_workers: int = 5,
+        timeout: int = 30000,
+        abort_event: Optional[threading.Event] = None,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+        diagnostics_callback: Optional[Callable[[str], None]] = None,
+    ) -> List[Dict[str, Any]]:
         """Perform many POST view.cgi operations efficiently using a pooled request context.
 
         operations: list of (blackhole_id, form_dict)
@@ -143,6 +154,17 @@ class BatchRemoval:
             return []
 
         results: List[Dict[str, Any]] = []
+        total_ops = len(operations)
+        processed = 0
+
+        def emit_diag(msg: str) -> None:
+            if diagnostics_callback:
+                try:
+                    diagnostics_callback(f"UPDATE[{id(self)}] {msg}")
+                except Exception:
+                    logger.debug("Diagnostics callback failed", exc_info=True)
+
+        emit_diag(f"batch start ops={total_ops} max_workers={max_workers}")
 
         # Use PlaywrightClient for pooled request context (reused across all operations)
         try:
@@ -150,6 +172,7 @@ class BatchRemoval:
             if not self.client:
                 if self.config:
                     self.client = PlaywrightClient(self.config)
+                    emit_diag("client created from shared config")
                 else:
                     # Fallback: create a temporary client from scratch
                     cfg = PlaywrightConfig(
@@ -160,24 +183,32 @@ class BatchRemoval:
                         http_pass=os.environ.get("BH_HTTP_PASS") or "",
                     )
                     self.client = PlaywrightClient(cfg)
+                    emit_diag("client created from fallback config")
+            else:
+                emit_diag("client reuse")
 
             def _do_op(item: Tuple[str, Dict[str, str]]) -> Dict[str, Any]:
                 bh_id, form = item
                 # Check abort signal before starting
                 if abort_event and abort_event.is_set():
+                    emit_diag(f"op skip id={bh_id} reason=abort")
                     return {"id": bh_id, "success": False, "status": 0, "text": "aborted"}
                 try:
+                    emit_diag(f"op start id={bh_id}")
                     # Use the pooled client instead of creating a new context each time
                     resp = self.client.post("view.cgi", params={"id": bh_id}, form=form, timeout=timeout)
                     status = int(resp.status or 0)
                     text = resp.text() or ""
                     ok = 200 <= status < 400
+                    emit_diag(f"op done id={bh_id} status={status} success={ok}")
                     return {"id": bh_id, "success": ok, "status": status, "text": text}
                 except Exception as e:
+                    emit_diag(f"op error id={bh_id} error={e}")
                     return {"id": bh_id, "success": False, "status": 0, "text": str(e)}
 
             # Run with a thread pool but keep a single pooled request context
             max_workers = max(1, int(max_workers or 1))
+            emit_diag(f"threadpool start max_workers={max_workers}")
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as exc:
                 futures = {exc.submit(_do_op, op): op for op in operations}
                 for fut in concurrent.futures.as_completed(futures):
@@ -188,9 +219,27 @@ class BatchRemoval:
                         bh_id = op[0] if op else "?"
                         res = {"id": bh_id, "success": False, "status": 0, "text": str(e)}
                     results.append(res)
+                    processed += 1
+                    if progress_callback:
+                        try:
+                            progress_callback(processed, total_ops)
+                        except Exception as cb_exc:
+                            logger.debug("batch_post_views progress callback failed: %s", cb_exc)
+            emit_diag(f"threadpool complete processed={processed}/{total_ops}")
         except Exception as e:
             # If client initialization failed, return failures for all
             for bh_id, _ in operations:
                 results.append({"id": bh_id, "success": False, "status": 0, "text": str(e)})
+            emit_diag(f"batch error {e}")
 
         return results
+
+    def close(self) -> None:
+        """Dispose of any pooled Playwright client resources."""
+        if self.client:
+            try:
+                self.client.dispose()
+            except Exception:
+                logger.debug("Playwright client disposal raised", exc_info=True)
+            finally:
+                self.client = None

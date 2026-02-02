@@ -1,73 +1,50 @@
-# Null Route Application (Public)
-Desktop GUI automation for the internal Lumen Blackhole portal. 
+# Blackhole Automation
 
-> **Owner:** Prajeet
-> **Status:** BUG-FIX  | Deployable as standalone `.exe`
+Desktop GUI for bulk blackhole route management on Lumen's DDoS mitigation infrastructure.
 
-**Key Features:**
-- Concurrent multi-IP operations (retrieve/create)
-- High-performance batch updates (faster via connection pooling **108x**) 
-- Async session logging (non-blocking)
-- 1-hour inactivity auto-logout (configurable)
-- Graceful shutdown & cooperative abort
-- Per-IP retry logic (3 attempts with delays)
-- Thread-safe UI updates
-- Desktop logs auto-created on first run
+> **Team:** DDoS Response Team  
+> **Version:** 2.0
 
-## Installation
+## Quick Start
 
-### For End Users (Quick Start)
+**For End Users:**
+1. Download and run `BlackholeAutomation.exe`
+2. Login with Blackhole portal credentials
+3. Use Help → View User Guide for instructions
 
-1. Download `BlackholeAutomation.exe` (or extract ZIP)
-2. Double-click `BlackholeAutomation.exe`
-3. Wait for GUI to open
-4. Log in with Blackhole portal credentials
-5. Desktop logs created at: `Desktop/BlackholeAutomation_Logs/`
+**No installation required.** Logs saved to `Desktop/BlackholeAutomation_Logs/`
 
-**No Python, venv, or dependencies needed on client machines.**
+---
 
-### For Developers (Local Setup)
+## Features
 
+- Bulk IP creation/removal with CIDR support
+- Batch operations (description, auto-close, ticket association)
+- CSV export and session logging
+- Concurrent multi-IP processing with retry logic
+- Auto-logout after 1 hour inactivity
+- Dark/Light theme support
+
+---
+
+## For Developers
+
+**Setup:**
 ```powershell
-# Clone repository
-git clone https://github.com/Prajeet-Lumen/Blackhole_Automation.git
-cd Blackhole_Automation
-
-# Create virtual environment
 python -m venv venv100
 .\venv100\Scripts\Activate.ps1
-
-# Install dependencies
 pip install -r requirements.txt
 python -m playwright install
-
-# Run locally
 python main_entry.py
 ```
-## Development & Building
 
-### Create Standalone .exe (For Distribution)
-
-**Prerequisites:**
-- Python 3.10+ (already installed)
-- venv100 activated
-
-**Steps:**
-
+**Build Executable:**
 ```powershell
-# Step 1: Install PyInstaller (one-time)
 pip install pyinstaller
-
-# Step 2: Build .exe
 pyinstaller BlackholeAutomation.spec
-
-# Step 3: Test
-.\dist\BlackholeAutomation\BlackholeAutomation.exe
-
 ```
-**Output:**
-- `dist/BlackholeAutomation.exe` — Standalone executable
-- `dist/BlackholeAutomation/` — All dependencies bundled (Playwright, pyee, greenlet)
+
+**Note:** Building requires administrator privileges on Windows. Output: `dist/BlackholeAutomation/`
 
 ---
 

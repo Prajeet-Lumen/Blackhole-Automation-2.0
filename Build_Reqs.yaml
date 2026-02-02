@@ -1,8 +1,7 @@
 project:
   name: blackhole-automation
-  version: "1.0"
+  version: "2.0"
   author: "Prajeet Pounraj"
-  created: "December 2025"
   last_updated: "2026-01-18"
   status: "BUG_FIX"
   description: >

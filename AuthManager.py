@@ -2,7 +2,7 @@
 """
 **AuthManager.py**
 Edited: January 2026
-Created by: Prajeet Pounraj
+Created by: Prajeet (DDoS Response Team)
 
 Authentication manager for Blackhole Automation using Playwright HTTP credentials.
 Handles login via HTTP Basic/Digest auth, captures and manages session state, and

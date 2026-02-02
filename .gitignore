@@ -1,0 +1,7 @@
+﻿# Ignore build artifacts
+__pycache__/
+session_logs/
+build/
+dist/
+*.pyc
+*.spec

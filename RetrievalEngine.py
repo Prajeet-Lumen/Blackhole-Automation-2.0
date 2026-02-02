@@ -2,7 +2,7 @@
 """
 **RetrievalEngine.py**
 Edited: January 2026
-Created by: Prajeet Pounraj
+Created by: Prajeet (DDoS Response Team)
 
 Retrieval engine for the internal Blackhole site using Playwright HTTP requests.
 Supports structured HTTP retrieval with query filtering (by ID, ticket, IP, user, date, or active holes).
@@ -66,7 +66,7 @@ class RetrievalEngine:
         val = (raw or "").strip()
         return "NTM-Remedy" if val.lower().replace("/", "-") == "ntm-remedy" else val
 
-    def _build_payload(self, filters: Dict[str, Any]) -> (str, Dict[str, str]):
+    def _build_payload(self, filters: Dict[str, Any]) -> tuple[str, Dict[str, str]]:
         endpoint = "search.cgi"
         payload: Dict[str, str] = {}
 

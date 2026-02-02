@@ -2,7 +2,7 @@
 """
 **PlayWrightUtil.py**
 Edited: January 2026
-Created by: Prajeet Pounraj
+Created by: Prajeet (DDoS Response Team)
 
 Centralized Playwright utilities for request context creation, cleanup, and TLS/credential handling.
 Provides PlaywrightConfig (immutable configuration object) and PlaywrightClient (pooled request
@@ -11,9 +11,11 @@ BatchRemoval modules. Supports connection pooling for high-throughput batch oper
 """
 from __future__ import annotations
 import os
+import sys
 import logging
 import threading
-from typing import Any, Dict, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, Optional, List
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +51,37 @@ class PlaywrightConfig:
         )
 
 
+@dataclass
+class _RequestSession:
+    manager: Any
+    playwright: Any
+    request: Any
+    thread_id: int
+    closed: bool = False
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        try:
+            if self.request:
+                self.request.dispose()
+        except Exception as exc:
+            if not suppress_cleanup_warning(exc):
+                logger.warning("Failed to dispose Playwright request context: %s", exc)
+            else:
+                logger.debug("Suppressed Playwright cleanup warning: %s", exc)
+        finally:
+            try:
+                if self.manager:
+                    self.manager.__exit__(None, None, None)
+            except Exception as exc:
+                if not suppress_cleanup_warning(exc):
+                    logger.warning("Failed to close Playwright manager: %s", exc)
+                else:
+                    logger.debug("Suppressed Playwright manager warning: %s", exc)
+            self.closed = True
+
+
 class PlaywrightClient:
     """
     Manages Playwright instance and request contexts with optional pooling.
@@ -66,32 +99,51 @@ class PlaywrightClient:
     """
     def __init__(self, config: PlaywrightConfig):
         self.config = config
-        self._pw = None
-        self._request_context = None
+        self._factory = None
         self._lock = threading.Lock()
         self._thread_local = threading.local()
+        self._sessions: List[_RequestSession] = []
 
-    def _ensure_playwright(self):
-        """Lazy-init Playwright instance."""
-        if self._pw:
+    def _ensure_factory(self) -> None:
+        if self._factory:
             return
         try:
             from playwright.sync_api import sync_playwright
         except Exception as exc:
             logger.error("Playwright import failed. Install with 'pip install playwright'.")
             raise
-        self._pw = sync_playwright
+        self._factory = sync_playwright
+
+    def _create_session(self) -> _RequestSession:
+        self._ensure_factory()
+        manager = self._factory()
+        try:
+            playwright = manager.__enter__()
+            kwargs = self.config.to_request_kwargs()
+            request = playwright.request.new_context(**kwargs)
+        except Exception:
+            exc_type, exc_value, exc_tb = sys.exc_info()
+            try:
+                manager.__exit__(exc_type, exc_value, exc_tb)
+            except Exception:
+                logger.debug("Failed to unwind Playwright manager during session creation", exc_info=True)
+            raise
+
+        session = _RequestSession(manager=manager, playwright=playwright, request=request, thread_id=threading.get_ident())
+        with self._lock:
+            self._sessions.append(session)
+        self._thread_local.session = session
+        return session
+
+    def _get_session(self) -> _RequestSession:
+        session = getattr(self._thread_local, "session", None)
+        if session and not session.closed:
+            return session
+        return self._create_session()
 
     def _get_request_context(self):
-        """Get or create a request context (reused for this thread/process)."""
-        if not self._request_context:
-            with self._lock:
-                if not self._request_context:
-                    self._ensure_playwright()
-                    pw = self._pw().__enter__()
-                    kw = self.config.to_request_kwargs()
-                    self._request_context = pw.request.new_context(**kw)
-        return self._request_context
+        session = self._get_session()
+        return session.request
 
     def get(self, path: str, params: Optional[Dict[str, Any]] = None, timeout: int = 30000):
         """Perform GET request using pooled context."""
@@ -105,15 +157,21 @@ class PlaywrightClient:
 
     def dispose(self):
         """Close the request context and Playwright instance."""
-        if self._request_context:
+        sessions: List[_RequestSession]
+        with self._lock:
+            sessions = list(self._sessions)
+            self._sessions.clear()
+        for session in sessions:
             try:
-                self._request_context.dispose()
-            except Exception as e:
-                if not suppress_cleanup_warning(e):
-                    logger.warning("Failed to dispose request context: %s", e)
-                else:
-                    logger.debug("Suppressed Playwright cleanup warning: %s", e)
-            self._request_context = None
+                session.close()
+            except Exception:
+                logger.debug("Session close raised", exc_info=True)
+        if hasattr(self._thread_local, "session"):
+            try:
+                del self._thread_local.session
+            except Exception:
+                self._thread_local.session = None
+        self._factory = None
 
 
 def read_env_config() -> Dict[str, Any]:
